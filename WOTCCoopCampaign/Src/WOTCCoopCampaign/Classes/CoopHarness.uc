@@ -18,6 +18,10 @@ var config array<HarnessStep> Steps;
 
 // config only so default.NextStep may be written: it carries progress across map loads (never saved)
 var config int NextStep;
+// wall clock (seconds of the day) when the pending step is due, 0 = none. A map load re-creates the harness and
+// used to restart the step's whole delay: a guest reconnecting after its host quit reloads the main menu every
+// ~64 s, so a 90 s step never came and the copy ran until the runner's timeout (relayleave, 2026-11-16).
+var config float StepDueAt;
 
 // Active wait started by @waitconn / @waithist; polled once per second.
 var name WaitKind;
@@ -47,20 +51,45 @@ event PostBeginPlay()
 	super.PostBeginPlay();
 	class'CoopHarnessNet'.static.Init();
 	class'CoopSession'.static.Init();
+	class'CoopJoin'.static.Init();
 	class'CoopSession'.static.HookHistory();
 	NextStep = default.NextStep;
-	`log("ready tag=" $ InstanceTag @ "steps=" $ Steps.Length @ "next=" $ NextStep @ "map=" $ WorldInfo.GetMapName(),, 'CoopHarness');
-	ScheduleNext();
+	`log("ready tag=" $ InstanceTag @ "steps=" $ Steps.Length @ "next=" $ NextStep @ "map=" $ WorldInfo.GetMapName()
+		@ "historyFrames=" $ `XCOMHISTORY.GetNumGameStates(),, 'CoopHarness');    // does a guest keep its history on the main menu?
+	ScheduleNext(true);
 }
 
-function ScheduleNext()
+function float WallSeconds()
 {
+	local int Year, Month, DayOfWeek, Day, Hour, Minute, Second, MSec;
+
+	GetSystemTime(Year, Month, DayOfWeek, Day, Hour, Minute, Second, MSec);
+	return Hour * 3600 + Minute * 60 + Second + MSec / 1000.0f;
+}
+
+// bResume: after a map load, keep the due time the step already had (only what is left of its delay)
+function ScheduleNext(optional bool bResume)
+{
+	local float Delay;
+
 	if (NextStep >= Steps.Length)
 	{
 		`log("done tag=" $ InstanceTag,, 'CoopHarness');
 		return;
 	}
-	SetTimer(FMax(Steps[NextStep].Delay, 0.01f), false, nameof(RunNext));
+	Delay = FMax(Steps[NextStep].Delay, 0.01f);
+	if (bResume && default.StepDueAt > 0)
+	{
+		Delay = default.StepDueAt - WallSeconds();
+		if (Delay < -43200)
+		{
+			Delay += 86400;    // past midnight
+		}
+		Delay = FClamp(Delay, 0.01f, FMax(Steps[NextStep].Delay, 0.01f));
+		`log("step" @ NextStep @ "resumes after the map load in" @ Delay @ "s",, 'CoopHarness');
+	}
+	default.StepDueAt = WallSeconds() + Delay;
+	SetTimer(Delay, false, nameof(RunNext));
 }
 
 function RunNext()
@@ -68,6 +97,7 @@ function RunNext()
 	local string Cmd;
 
 	Cmd = Steps[NextStep].Cmd;
+	default.StepDueAt = 0;
 	`log("step" @ NextStep @ "cmd=" $ Cmd,, 'CoopHarness');
 	NextStep++;
 	default.NextStep = NextStep;
@@ -92,6 +122,26 @@ function StartWait(name Kind, int Arg)
 	WaitArg = Arg;
 	WaitLeft = 180.0f;
 	SetTimer(1.0f, true, nameof(PollWait));
+}
+
+function bool IsMyXComTurn()
+{
+	local X2TacticalGameRuleset Rules;
+	local XComGameState_AIGroup Group;
+
+	if (!class'CoopSession'.static.InTactical())
+	{
+		return false;
+	}
+	Rules = `TACTICALRULES;
+	if (!Rules.IsInState('TurnPhase_UnitActions'))
+	{
+		return false;
+	}
+	Group = XComGameState_AIGroup(`XCOMHISTORY.GetGameStateForObjectID(Rules.CachedUnitActionInitiativeRef.ObjectID));
+	// an empty group (every soldier of that guest mind-controlled) is run, and skipped, by the host: not a turn
+	return Group != none && Group.TeamName == eTeam_XCom && Group.m_arrMembers.Length > 0
+		&& class'CoopTactical'.static.ControllerOfInitiative(Group) == class'CoopRole'.static.LocalSlot();
 }
 
 function PollWait()
@@ -123,6 +173,22 @@ function PollWait()
 	{
 		bMet = !class'CoopSession'.default.bHasBaton;
 	}
+	else if (WaitKind == 'MyTurn')
+	{
+		CloseChosenReveal();
+		bMet = IsMyXComTurn();
+	}
+	else if (WaitKind == 'EndTurn')
+	{
+		// PerformEndTurn returns false and does nothing while an action is still being shown (a Chosen's Corrupt,
+		// corruptguest 2026-11-17): the host's next @waitmyturn then returned at once and its turn count ran ahead
+		// of the game. Ask again every 3 s until this machine's turn is over.
+		bMet = !IsMyXComTurn();
+		if (!bMet && int(WaitLeft) % 3 == 0)
+		{
+			`log("endturn retry result=" $ BoolStr(XComTacticalController(GetALocalPlayerController()).PerformEndTurn(ePlayerEndTurnType_PlayerInput)),, 'CoopHarness');
+		}
+	}
 	else if (WaitKind == 'GrantReq')
 	{
 		bMet = class'CoopSession'.default.bGrantRequested; // the partner asked while our edit screen is open
@@ -148,6 +214,14 @@ static function string BoolStr(bool b)
 
 function RunHarnessCommand(string Cmd)
 {
+	if (Cmd ~= "endturn" && IsMyXComTurn())
+	{
+		// end the turn, then wait until it is really over (see 'EndTurn' in PollWait)
+		`log("endturn result=" $ BoolStr(XComTacticalController(GetALocalPlayerController()).PerformEndTurn(ePlayerEndTurnType_PlayerInput)),, 'CoopExp');
+		StartWait('EndTurn', 0);
+		WaitLeft = 60.0f;
+		return;
+	}
 	if (Cmd ~= "quit")
 	{
 		GetALocalPlayerController().ConsoleCommand("exit");
@@ -156,6 +230,10 @@ function RunHarnessCommand(string Cmd)
 	{
 		`log("net server=" $ BoolStr(`XCOMNETMANAGER.HasServerConnection()) @ "client=" $ BoolStr(`XCOMNETMANAGER.HasClientConnection())
 			@ "connections=" $ BoolStr(`XCOMNETMANAGER.HasConnections()),, 'CoopHarness');
+	}
+	else if (Left(Cmd, 5) ~= "host ")
+	{
+		class'CoopLink'.static.HostOpen(int(Mid(Cmd, 5)));
 	}
 	else if (Left(Cmd, 8) ~= "connect ")
 	{
@@ -169,6 +247,12 @@ function RunHarnessCommand(string Cmd)
 	{
 		StartWait('Conn', 0);
 	}
+	else if (Left(Cmd, 9) ~= "waitconn ")
+	{
+		// "@waitconn 900": a longer wait (two-PC runs: the other PC's player starts the guest by hand)
+		StartWait('Conn', 0);
+		WaitLeft = float(Mid(Cmd, 9));
+	}
 	else if (Left(Cmd, 9) ~= "waithist ")
 	{
 		StartWait('Hist', int(Mid(Cmd, 9)));
@@ -179,10 +263,12 @@ function RunHarnessCommand(string Cmd)
 	}
 	else if (Cmd ~= "avenger")
 	{
+		ClearShellLiveDelegates();
 		GetALocalPlayerController().ConsoleCommand("open Avenger_Root?game=XComGame.XComHeadQuartersGame");
 	}
 	else if (Cmd ~= "mirror")
 	{
+		ClearShellLiveDelegates();
 		class'CoopSession'.default.bEnterAsMirror = true;
 		GetALocalPlayerController().ConsoleCommand("open Avenger_Root?game=XComGame.XComHeadQuartersGame");
 	}
@@ -197,6 +283,12 @@ function RunHarnessCommand(string Cmd)
 	else if (Cmd ~= "batonreq")
 	{
 		class'CoopSession'.static.RequestBaton();
+	}
+	else if (Left(Cmd, 12) ~= "batonanswer ")
+	{
+		// "@batonanswer yes|no": answer the holder's "hand over control?" prompt (CoopBatonPrompt)
+		class'CoopBatonPrompt'.static.CloseDialog();
+		class'CoopBatonPrompt'.static.Answer(Mid(Cmd, 12) ~= "yes");
 	}
 	else if (Cmd ~= "grant")
 	{
@@ -217,6 +309,40 @@ function RunHarnessCommand(string Cmd)
 	else if (Cmd ~= "waitnobaton")
 	{
 		StartWait('NoBaton', 0);
+	}
+	else if (Cmd ~= "waitmyturn")
+	{
+		// one of this copy's own XCom groups has the initiative (not while handing over or watching)
+		StartWait('MyTurn', 0);
+		WaitLeft = 600.0f;
+	}
+	else if (Cmd ~= "waitstrategy")
+	{
+		// met once the Avenger is loaded; on any other map this step runs again on the next map
+		if (XComHeadquartersGame(WorldInfo.Game) == none)
+		{
+			NextStep--;
+			default.NextStep = NextStep;
+			StartWait('MapChange', 0);
+			WaitLeft = 900.0f;
+		}
+	}
+	else if (Cmd ~= "waittactical")
+	{
+		// met once a mission map is loaded; on any other map this step runs again on the next map
+		if (!class'CoopSession'.static.InTactical())
+		{
+			NextStep--;
+			default.NextStep = NextStep;
+			StartWait('MapChange', 0);
+			WaitLeft = 900.0f;
+		}
+	}
+	else if (Cmd ~= "waitmapchange")
+	{
+		// never met on this map: the next map's harness continues with the next step
+		StartWait('MapChange', 0);
+		WaitLeft = 900.0f;
 	}
 	else if (Cmd ~= "waitgrantreq")
 	{
@@ -261,6 +387,10 @@ function RunHarnessCommand(string Cmd)
 	else if (Cmd ~= "close")
 	{
 		`SCREENSTACK.GetCurrentScreen().CloseScreen();
+	}
+	else if (Left(Cmd, 12) ~= "closescreen ")
+	{
+		CloseScreenNamed(name(Mid(Cmd, 12)));
 	}
 	else if (Cmd ~= "screens")
 	{
@@ -322,6 +452,22 @@ function RunHarnessCommand(string Cmd)
 		SaveSlot = `AUTOSAVEMGR.GetNextSaveID();
 		`log("save slot=" $ SaveSlot @ "frames=" $ `XCOMHISTORY.GetNumGameStates() @ "fp=" $ class'CoopSession'.static.Fingerprint(),, 'CoopHarness');
 		`ONLINEEVENTMGR.SaveGame(SaveSlot, false, false, SaveDone);
+	}
+	else if (Left(Cmd, 8) ~= "clickui ")
+	{
+		ClickUI(name(Mid(Cmd, 8)));
+	}
+	else if (Left(Cmd, 12) ~= "inputaccept ")
+	{
+		InputAccept(Mid(Cmd, 12));
+	}
+	else if (Cmd ~= "loadnewest")
+	{
+		LoadNewest(false);
+	}
+	else if (Cmd ~= "loadnewest tactical")
+	{
+		LoadNewest(true);    // only saves made inside a mission
 	}
 	else if (Left(Cmd, 5) ~= "load ")
 	{
@@ -399,10 +545,16 @@ function RunHarnessCommand(string Cmd)
 	{
 		Construct(Mid(Cmd, 10));
 	}
-	else
+	else if (!class'CoopExperiments'.static.EnsureSpawned(self).Run(Cmd) && !class'CoopContentTests'.static.Run(Cmd))
 	{
 		`log("unknown harness command" @ Cmd,, 'CoopHarness');
 	}
+}
+
+// Before leaving the shell map.
+function ClearShellLiveDelegates()
+{
+	class'CoopTacticalNet'.static.ClearShellLiveDelegates();
 }
 
 // New campaign without tutorial and without the first tactical mission (like the dev
@@ -413,6 +565,7 @@ function StartDebugCampaign()
 	local XComGameState_CampaignSettings Settings;
 	local XComGameState_Objective ObjectiveState;
 
+	ClearShellLiveDelegates();
 	StartState = class'XComGameStateContext_StrategyGameRule'.static.CreateStrategyGameStart(, , false, false, true, 1, , , , true);
 	Settings = XComGameState_CampaignSettings(`XCOMHISTORY.GetSingleGameStateObjectForClass(class'XComGameState_CampaignSettings'));
 	Settings.SetStartTime(StartState.TimeStamp);
@@ -679,6 +832,107 @@ function LoadSlot(int SaveID)
 	`log("load slot=" $ SaveID @ "not found among" @ Saves.Length @ "saves",, 'CoopHarness');
 }
 
+// "@closescreen UISquadSelect": close that screen (and everything above it) wherever it is in the stack.
+function CloseScreenNamed(name ClassName)
+{
+	local UIScreen Screen;
+
+	foreach `SCREENSTACK.Screens(Screen)
+	{
+		if (Screen.IsA(ClassName))
+		{
+			// The loot screen (after taking a vial, a body's loot...) is only a display: the items were taken
+			// when the ability ran. X2Action_Loot waits for its OK button's callback, which a bare CloseScreen
+			// never calls, so press OK as a player would.
+			if (UIInventoryTactical(Screen) != none)
+			{
+				`log("closescreen" @ Screen.Class.Name @ "with its OK button",, 'CoopHarness');
+				UIInventoryTactical(Screen).AutoclickButton();
+				return;
+			}
+			`log("closescreen" @ Screen.Class.Name,, 'CoopHarness');
+			`SCREENSTACK.PopUntil(Screen);
+			Screen.CloseScreen();
+			return;
+		}
+	}
+	`log("closescreen" @ ClassName @ "not open",, 'CoopHarness');
+}
+
+// "@clickui CoopJoinButton": press a button the mod added, as a mouse click would (its OnClicked delegate).
+function ClickUI(name ButtonName)
+{
+	local UIButton Button;
+
+	foreach AllActors(class'UIButton', Button)
+	{
+		if (Button.MCName == ButtonName && Button.bIsVisible && Button.OnClickedDelegate != none)
+		{
+			`log("clickui" @ ButtonName,, 'CoopHarness');
+			Button.OnClickedDelegate(Button);
+			return;
+		}
+	}
+	`log("clickui" @ ButtonName @ "not found",, 'CoopHarness');
+}
+
+// "@inputaccept 127.0.0.1:7778": accept the open text input dialog with this text (typing it in Flash is not
+// possible from script; the dialog's accept callback is what OK calls with the typed text).
+function InputAccept(string Text)
+{
+	local UIInputDialogue Dialog;
+	local delegate<UIInputDialogue.TextInputAcceptedCallback> Accepted;
+
+	foreach AllActors(class'UIInputDialogue', Dialog)
+	{
+		if (Dialog.Movie != none && Dialog.Movie.Stack.IsInStack(class'UIInputDialogue'))
+		{
+			Accepted = Dialog.m_kData.fnCallbackAccepted;
+			`log("inputaccept" @ Text @ "title=" $ Dialog.m_kData.strTitle,, 'CoopHarness');
+			// what OK does: close the dialog, then the accept callback with the typed text
+			Dialog.Movie.Stack.PopIncluding(Dialog);
+			if (Accepted != none)
+			{
+				Accepted(Text);
+			}
+			return;
+		}
+	}
+	`log("inputaccept: no input dialog open",, 'CoopHarness');
+}
+
+// Loads the newest save of this copy (highest save ID), e.g. from the main menu after a restart.
+function LoadNewest(bool bTacticalOnly)
+{
+	local array<OnlineSaveGame> Saves;
+	local SaveGameHeader Header;
+	local int i, Best;
+
+	`ONLINEEVENTMGR.GetSaveGames(Saves);
+	Best = -1;
+	for (i = 0; i < Saves.Length; i++)
+	{
+		if (Saves[i].SaveGames.Length == 0)
+		{
+			continue;
+		}
+		Header = Saves[i].SaveGames[0].SaveGameHeader;
+		`log("save id=" $ Header.SaveID @ "tactical=" $ BoolStr(Header.bIsTacticalSave) @ "ironman=" $ BoolStr(Header.bIsIronman)
+			@ "auto=" $ BoolStr(Header.bIsAutosave) @ "turn=" $ Header.Turn @ "time=" $ Header.Time,, 'CoopHarness');
+		if ((!bTacticalOnly || Header.bIsTacticalSave) && Header.SaveID > Best)
+		{
+			Best = Header.SaveID;
+		}
+	}
+	if (Best < 0)
+	{
+		`log("loadnewest: no saves",, 'CoopHarness');
+		return;
+	}
+	ClearShellLiveDelegates();
+	LoadSlot(Best);
+}
+
 function LoadDone(bool bWasSuccessful)
 {
 	`log("load read ok=" $ BoolStr(bWasSuccessful),, 'CoopHarness');
@@ -832,6 +1086,25 @@ function StartResearch(name TechName)
 		}
 	}
 	`log("research: no tech" @ TechName,, 'CoopHarness');
+}
+
+// A Chosen's first appearance opens UIChosenReveal and pauses the game until the player clicks it away
+// (X2Action_RevealAIBegin waits for it); the bot clicks it away while it waits for its turn (soak-20261115:
+// the host sat on it for the rest of the run).
+function CloseChosenReveal()
+{
+	local UIScreen Reveal;
+
+	if (`PRES == none || `PRES.ScreenStack == none)
+	{
+		return;
+	}
+	Reveal = `PRES.ScreenStack.GetScreen(class'UIChosenReveal');
+	if (Reveal != none)
+	{
+		`log("closed UIChosenReveal (as a player would)",, 'CoopHarness');
+		Reveal.CloseScreen();
+	}
 }
 
 // Closes popups (alerts, reports, mission screens) down to the Geoscape or the Avenger base
@@ -1006,25 +1279,11 @@ function LogObjectRange(string Args)
 // first number), so the address is passed as one decimal integer.
 function Connect(string Args)
 {
-	local array<string> Parts, Octets;
-	local URL ClientURL;
-	local string Error;
-	local int Addr, i;
+	local array<string> Parts;
 
 	Parts = SplitString(Args, " ", true);
-	Octets = SplitString(Parts[0], ".", true);
-	for (i = 0; i < Octets.Length; i++)
-	{
-		Addr = (Addr << 8) | (int(Octets[i]) & 255);
-	}
-	ClientURL.Host = string(Addr);
-	ClientURL.Port = int(Parts[1]);
-	`log("connect host=" $ ClientURL.Host @ "port=" $ ClientURL.Port,, 'CoopHarness');
-	`XCOMNETMANAGER.CreateClient(ClientURL, Error);
-	if (Error != "")
-	{
-		`log("connect error=" $ Error,, 'CoopHarness');
-	}
+	`log("connect host=" $ Parts[0] @ "port=" $ Parts[1],, 'CoopHarness');
+	class'CoopLink'.static.GuestConnect(Parts[0], int(Parts[1]));    // remembers the host for reconnecting
 	SetTimer(0.25f, false, nameof(ForceConnect));
 }
 

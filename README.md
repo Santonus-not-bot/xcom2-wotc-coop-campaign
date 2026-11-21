@@ -1,78 +1,133 @@
-# WOTC Co-op Campaign (prototype)
+# WOTC Co-op Campaign
 
-Two-player shared campaign for **XCOM 2: War of the Chosen**: both players run the same
-Avenger, take turns changing it, and (later) play the tactical missions together.
+A shared campaign for up to four players in **XCOM 2: War of the Chosen**. Everyone is on
+one Avenger. The host has control of the Avenger by default and gives soldiers to the
+guests; guests manage their own soldiers and can ask the host for control. In missions each player moves their own soldiers in
+turn: the host first, then each guest in slot order, then the aliens. Everyone else watches.
 
-**Status: prototype, strategy layer only.** Not playable as a campaign yet: tactical
-missions are not shared, and only the Avenger/strategy state is synchronised. Built with
-the [Co-op Anything](https://github.com/cranebeaker/coop-anything) playbook; full
-research notes are in `games/xcom-2/NOTES.md` there.
+**Status: not released, early testing.** A full campaign loop has run in automated tests
+with two to four copies of the game on one PC over direct IP. Between two PCs on a home
+network (direct IP, one Steam account with the guest PC offline) joining, missions and
+mission end work, and people have played it by hand; Steam invites, two Steam accounts
+and more than two PCs are untested. Built with the [Co-op Anything](https://github.com/cranebeaker/coop-anything)
+playbook. Its write-up there (`games/xcom-2/`) holds the design, every test run and the
+latest results.
 
 Tested on: Steam, XCOM 2 buildid 8270065 (changelist 699444), War of the Chosen + all DLC,
-Windows 10, two game instances on one PC over 127.0.0.1. Not tested between two PCs or
-over Steam networking.
+Windows x64.
 
-## What works (each item has a test, see QA)
+## How to play (once released)
 
-- **Join:** the host sends its whole campaign history; the client opens the Avenger
-  from it through the load-game path (`CoopHeadquartersGame`, "mirror" entry).
-- **Baton:** one player at a time may change the campaign. The holder's every new frame
-  goes to the partner as a merge game state plus a fingerprint (resources, counts, last
-  ObjectIDs). Resources, new units, techs, facilities built and removed all arrive with the
-  same ObjectIDs on both sides.
-- **Handoff over the network:** request -> grant (epoch, fingerprint, highest ObjectID)
-  -> the receiver takes the baton once it has caught up and no frame arrived for 1 s -> ack.
-- **Edit screens need the baton** (`CoopEditGate`, list in `Config/XComCoopCampaign.ini`:
-  research, Proving Ground, building, armory, inventory, recruiting, squad select,
-  Geoscape...). Opening one without the baton asks for it and shows a "waiting for
-  partner" dialog with Cancel. The holder hands over only after closing its edit screens.
-- **Safety net:** the player without the baton cannot create game state objects
-  (`CoopStrategyRuleset`), otherwise both sides would hand out the same ObjectID.
-- **HUD panel** (Avenger and Geoscape, top right): who has control, "Ask for control"
-  button, partner busy / asking hints. English and Russian texts.
-- **Screen refresh on the receiver:** changed rooms are swapped like a finished
-  construction; resource bar and facility grid are rebuilt.
-- **Geoscape clock:** the holder's time travels with its frames; the partner's clock
-  follows and continues forward after a handoff.
-- **Batching:** frames made within 0.2 s go out as one merge state (the network layer lost
-  frames sent one by one in bursts). The batch is a frame of its own on the sender
-  ("Coop batch"): sending a state that is not in the history cut the sender's own
-  previous-version links.
-  One merge state in flight: the receiver acknowledges each one ("CoopMergeAck"); a second
-  batch sent 0.23 s after the first was lost. A merge without an ack is sent again after 5 s.
-- **History alignment:** before each merge the receiver adds empty frames so the merge
-  lands in the same frame number as the sender's batch; without it the host crashed in 5 of
-  11 runs of the new-units test (the Avenger's map icon looked up an older version).
-- **Projects across players:** research and facility construction started by one player
-  complete on the other's Geoscape; the result and the room swap reach the starter.
-- **Client drop and rejoin:** when the connection closes the host takes the baton back
-  (also from a client that died holding it) and drops what was in flight; a new client
-  process connects, receives the whole history again and continues with the baton handoff.
-- **Host saves after merges load back** the same campaign (fingerprint and crew equal,
-  Geoscape time runs, saving again works).
-- **Only the host saves:** on the client autosaves, quicksaves and the pause menu's Save are
-  disabled (`CoopAutosaveMgr`, `CoopSaveGate`); a client that saved while sending crashed.
+1. Every player installs the same mods. The guest's game compares its mod list with the
+   host's and refuses to join on a mismatch.
+2. The host starts or loads a campaign and clicks **Host co-op** on the Avenger. That
+   turns a single-player campaign into a co-op one.
+3. Each guest clicks **Join co-op** on the main menu and enters the host's address. The
+   default port is 7778 (UDP); the host may have to open it.
+4. On the Armory soldier screen the host gives soldiers to players (**Owner** button). In
+   squad select the host sets which player gets each slot.
+5. Only the host saves (Ironman too). After loading, the host's game opens the server by
+   itself, and guests that drop reconnect on their own.
+
+Map pings and text chat work in missions and on the Avenger. Owner tags next to the unit
+flags show whose soldier is whose (HOST gold, P2 green, P3 pink, P4 orange). A banner
+shows whose turn it is.
+
+## What works (each item has an automated test)
+
+**Avenger and Geoscape**
+
+- **Join:** the host sends its whole campaign history; the guest opens the Avenger from
+  it through the load-game path (`CoopHeadquartersGame`).
+- **Control of the Avenger** (`CoopSession` baton, `CoopEditGate`, `CoopGuestRights`,
+  `CoopBatonPrompt`): the host has it from the start. A guest that asks (button, or by
+  opening an edit screen) gets it when the holder answers Yes; the host can always take
+  it back. Guests edit their own soldiers without asking. With control a guest may do
+  everything the host can except launch missions. The Barracks, the memorial and a
+  soldier's overview are open to everyone.
+- **Watching the host:** guests follow the Geoscape clock of the player with control
+  (`CoopGeoWatch`) and see the squad the host is picking, with the mission name
+  (`CoopSquadView`).
+- **One editor at a time:** a machine without the baton cannot create game state objects
+  (`CoopStrategyRuleset`), otherwise two machines would hand out the same ObjectID.
+- **Soldier ownership** (`CoopOwnership`, `CoopHostActions`, `CoopSquadRules`): the host
+  gives or takes back any soldier at any time; squad slots are assigned per mission.
+
+**Missions**
+
+- **Turns per player** (`CoopTactical`, `CoopTacticalRuleset`, `CoopTacticalController`):
+  one XCom initiative group per player, a selection gate so you can only select your own
+  soldiers, and handover between machines through the host (guests connect only to the
+  host, which relays frames to the other guests).
+- **Single-player rules put back** (`CoopRules`, `CoopToHitCalc_StandardAim`,
+  `CoopEffect_Suppression`, `CoopEffect_SpawnShadowbindUnit`): an open connection makes
+  the game treat a campaign mission as multiplayer in several places (flank crits,
+  suppression, Shadowbind, pausing).
+- **Soldiers who join mid-mission** (Avenger defense reinforcements, rescued soldiers)
+  move into their owner's group at the next XCom turn.
+- **Game content covered by tests:** mind control of and by guests' soldiers, the Lost,
+  Chosen kidnapping a guest's soldier, retaliation, a story mission, Avenger defense.
+
+**What players see**
+
+- **Player panel** (`CoopHUDScreen`, `CoopRoster`): every player's Steam name in their
+  colour, slot, connection state (connected, loading, reconnecting, left) and what they are
+  doing on the Avenger (`CoopActivity`); toasts for joins, leaves and reconnects.
+- **Barracks tags** (`CoopBarracksTags`): each soldier's owner next to the name, other
+  players' rows tinted in their colour.
+- **Mission loading screen for guests** (`CoopMissionLoading`, `CoopLoadingScreen`): "the
+  host is launching <mission>" with the steps, from the launch until the guest is in the
+  mission, and the same on the way back to the Avenger.
+- **In missions** (`CoopPresence`, `CoopActionWatch`, `CoopTurnBanner`): a turn banner,
+  the active player's cursor marker and selected soldier, a short feed of their actions,
+  and map pings (Alt + left click) on every machine.
+
+**Connections and saves**
+
+- **Disconnects:** the host takes over a dropped guest's soldiers. The guest reconnects
+  by itself, joins the running mission and gets them back. A guest that restarts its game
+  asks for its old slot again (`CoopGuestMemory`).
+- **Mission start and end:** the connection closes while a map loads and reopens when
+  everyone is back (`CoopLink`).
+- **Saves:** host only, mid-mission and Ironman included (`CoopAutosaveMgr`,
+  `CoopSaveGate`).
+- **Crash fixes:** the game's PvP lost-connection handling is skipped in co-op missions,
+  and a guest leaving the Avenger pauses the world for a second first. Without that, the
+  game's sound callback could run after the map was gone (`CoopHeadquartersController`).
+
+## Settings
+
+`Config/XComCoopCampaign.ini`, main keys:
+
+| Key | Default | What it does |
+|---|---|---|
+| `CoopLink.DefaultPort` | 7778 | Port the host listens on |
+| `CoopLink.ReconnectSeconds` | 600 | How long a guest keeps trying to reconnect |
+| `CoopLink.WaitForGuestsSeconds` | 120 | How long the host waits for guests after a map load |
+| `CoopLink.bAutoHostOnLoad` | true | Loading a co-op save opens the server |
+| `CoopTactical.bSplitXComGroupAtStart` | true | One initiative group per player |
+| `CoopTacticalController.bGateSelection` | true | Players select only their own soldiers |
+| `CoopGuestRights.bHostDecidesCampaign` | true | Guests manage only their soldiers |
+| `CoopSteamJoin.bSteamInvites` | false | Steam invites (untested) |
+| `CoopEditGate.EditScreens` | list | Screens that need the baton |
 
 ## Known issues
 
-- No tactical co-op yet; no mission launch for two players.
-- The player without the baton still runs some local UI frames (alerts seen, entered
-  facility...). They are not sent and get overwritten by the holder's merges.
-- The Geoscape clock: a player who stays on the Geoscape keeps the baton until leaving it.
-- Popups (research done, facility built, new missions) appear only for the player on the
-  Geoscape; the partner sees the result but no popup.
-- The edit screen list is a first guess (staff slots inside facilities, DLC/mod screens).
-- One unexplained crash of the client (engine package loading, tbbmalloc) while it was
-  entering facilities by hand; not reproduced.
-- Merged object versions keep the sender's "previous version" frame number; the receiver
-  pads its history so they stay valid (`CoopSession.AlignHistory`). On the receiver the
-  previous-version chain of a merged object ends at the merged version (the lookup returns
-  none, no crash). Whether some game code needs that older version is unknown.
-- Joining (also after a drop) is driven by the test bot: the host sends the history with
-  `MPSendHistory`; there is no join menu yet. A host that drops is not handled beyond a log
-  line on the client.
-- Only direct IP tested (the host address is passed as one decimal integer: the engine's
-  IpNetDriverSteamworks does not parse a dotted host).
+- Untested with two Steam accounts, over Steam (invites and Steam sockets) and with more
+  than two PCs.
+- Very long campaigns: a whole-history send above about 670 KB never arrives (around
+  mission 14 of a test campaign). `CoopLink.bPartialResend=true` sends deltas
+  instead; it passed 16 missions on one PC but is off by default.
+- A guest goes through the main menu during a mission launch (covered by the loading
+  screen); only the host launches missions.
+- A guest that joins mid-mission can lose its first turn.
+- A guest who drops mid-turn loses that turn's actions; the host plays on from there.
+- Mods that replace `UIUnitFlag` conflict with the owner tags. Mods that replace
+  `XComHeadquartersController` conflict with the guest's Avenger exit.
+- A guest's visualization that times out while it waits for its turn is finished by the
+  mod so the turn can start. The cause (an AI reveal timing out on the guest) is unknown.
+- Popups (research done, new missions) show only on the machine on the Geoscape, which is
+  the host's (found in the strategy prototype, not rechecked since).
 
 ## Build
 
@@ -81,38 +136,34 @@ tests (never build into the install you play):
 
 ```powershell
 $env:XCOM2_SDK = "<SDK dir>"          # ...\XCOM 2 War of the Chosen SDK
-$env:COOP_WORKSPACE = "<workspace>"   # holds test-install\ and test-install-b\
+$env:COOP_WORKSPACE = "<workspace>"   # holds the test copies of the game
 tools\build_mod.ps1
 ```
 
 Build scripts: [X2ModBuildCommon](https://github.com/X2CommunityCore/X2ModBuildCommon)
 (MIT, in `.scripts/`).
 
-## QA: two game instances on one PC
+## QA: several game copies on one PC
 
-- `test-install` = copy of the game folder, `test-install-b` = hard-link clone of it with
-  its own `XComGame/Config` (`tools/hardlink_clone.py`). Both run with `-nohomedir`, so
-  saves/config/logs stay inside the copies.
+- Each copy is a hard-link clone of a test install with its own `XComGame/Config`
+  (`tools/hardlink_clone.py`). All run with `-nohomedir`, so saves, config and logs stay
+  inside the copies.
 - XCOM 2 refuses a second instance while the first holds the mutex `UnrealEngine3_<n>`;
-  `tools/launch_pair.ps1` closes that handle inside instance A (same user, no admin) with
-  Sysinternals `handle64.exe` (download it yourself, set `SYSINTERNALS_HANDLE`) and
+  `tools/launch_pair.ps1` closes that handle inside the first copy (same user, no admin)
+  with Sysinternals `handle64.exe` (download it yourself, set `SYSINTERNALS_HANDLE`) and
   `tools/close_remote_handle.py`.
-- The mod contains a test bot (`CoopHarness`): `tools/run_pair_test.ps1` writes a list of
-  steps per instance (console commands and `@harness` commands such as `@connect`,
-  `@baton`, `@crewinfo`, `@rooms`, `@open research`, `@ask`, `@save`, `@load N`,
-  `@verchain`, `@construct`, `@dismiss`, `@waitgrantreq`, `@waitjoins N`) and collects both logs.
-  `tools/run_rejoin_test.ps1` kills instance B after its steps and starts it again.
-  It does nothing when its step list is empty (normal play).
-- `tools/test_suite.ps1` runs the scenarios and asserts on both logs (expected lines, no
-  DESYNC/crash/duplicate IDs, equal final fingerprints). Do not touch the game windows
-  during a run: the client's camera and screens react to the mouse.
+- The mod contains a test bot (`CoopHarness`, `CoopExperiments`, `CoopContentTests`). A
+  runner writes a list of steps per copy (console commands and `@` commands such as
+  `@connect`, `@squad`, `@launch`, `@waitmyturn`, `@endturn`, `@useability`, `@save`),
+  starts the copies, and asserts on every copy's log (expected lines, no crash, no
+  desync, equal campaign fingerprints). The bot does nothing when its step list is empty
+  (normal play).
+- Some crashes leave no game crash report. With Windows' `LocalDumps` setting on, Windows
+  writes a minidump for them, and `tools/minidump_info.py` reads it without a debugger.
 
-Last suite result: see the Co-op Anything write-up (`games/xcom-2/README.md`).
+Last results: see the Co-op Anything write-up (`games/xcom-2/README.md`).
 
-Other tools: `minidump_info.py` (crash address -> module+offset, stack scan),
-`re_func_strings.py`, `re_dis.py`, `re_callers.py` (strings/disassembly around an address),
-`trace_start.py` (DLL loads/exceptions at start), `udp_sniff.py`, `list_windows.py`.
+## Credits and license
 
-## License
-
-See `LICENSE`.
+Strategy-layer prototype by EvilMask587; campaign and mission co-op built on it. See
+`LICENSE` (MIT).

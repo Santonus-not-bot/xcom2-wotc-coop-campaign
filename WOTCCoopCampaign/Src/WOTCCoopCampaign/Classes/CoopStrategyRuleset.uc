@@ -31,6 +31,11 @@ simulated function bool SubmitGameStates(array<XComGameState> NewStates)
 			}
 		}
 	}
+	// squad slot ownership: undoes illegal slot changes in the pending frames (the partner's frames were checked on their side)
+	if (!class'CoopSession'.default.bApplyingRemote)
+	{
+		class'CoopSquadRules'.static.CheckAndClaim(NewStates);
+	}
 	return super.SubmitGameStates(NewStates);
 }
 

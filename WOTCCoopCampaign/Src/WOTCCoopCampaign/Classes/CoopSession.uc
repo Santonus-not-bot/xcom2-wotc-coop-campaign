@@ -148,7 +148,9 @@ static function CheckRequestTimeout()
 	}
 }
 
-static function RequestBaton()
+// bForce: take it without the holder's yes (the host always; a guest for its own soldiers). A plain request from a
+// guest shows the holder a Yes/No (CoopBatonPrompt). Rules set after the two-PC play test 2026-11-19.
+static function RequestBaton(optional bool bForce)
 {
 	local array<byte> Params;
 
@@ -162,12 +164,17 @@ static function RequestBaton()
 		`log("baton request: already sent",, 'CoopCampaign');
 		return;
 	}
+	if (class'CoopRole'.static.IsHost())
+	{
+		bForce = true;    // the host can always take it back
+	}
 	default.bRequestSent = true;
 	default.bRequestQueued = false;
 	default.RequestTime = Now();
-	Params.Length = 0; // no parameters
+	class'XComGameStateNetworkManager'.static.AddCommandParam_Int(class'CoopRoster'.static.MySlot(), Params);
+	class'XComGameStateNetworkManager'.static.AddCommandParam_Int(bForce ? 1 : 0, Params);
 	`XCOMNETMANAGER.SendRemoteCommand("CoopBatonRequest", Params);
-	`log("baton requested",, 'CoopCampaign');
+	`log("baton requested" @ (bForce ? "(taking it)" : "(asking)"),, 'CoopCampaign');
 }
 
 static function GrantBaton()
@@ -245,6 +252,18 @@ function TryAcceptGrant()
 	`XCOMNETMANAGER.SendRemoteCommand("CoopBatonAck", Params);
 }
 
+// Inside a mission the strategy batch is off: the tactical layer sends the mission history and
+// partial histories itself (CoopTacticalNet). A batch sent while the host generated the mission map
+// crashed it ("Object is not packaged: XComGameState_EnvironmentDamage None" in SendMergeGameState
+// right after "Finished Map Streaming", test run 2026-11-12, scenario mission).
+static function bool InTactical()
+{
+	local XComGameInfo Game;
+
+	Game = XComGameInfo(class'WorldInfo'.static.GetWorldInfo().Game);
+	return Game != none && X2TacticalGameRuleset(Game.GameRuleset) != none;
+}
+
 static function bool IsConnected()
 {
 	return `XCOMNETMANAGER.HasServerConnection() || `XCOMNETMANAGER.HasClientConnection();
@@ -259,7 +278,7 @@ function OnNewGameState(XComGameState NewGameState)
 		return;
 	}
 	default.LastHandledFrame = NewGameState.HistoryIndex;
-	if (default.bApplyingRemote || !IsConnected())
+	if (default.bApplyingRemote || !IsConnected() || InTactical())
 	{
 		return;
 	}
@@ -312,9 +331,24 @@ static function FlushBatch()
 	local int ObjectID, Frames;
 
 	default.bFlushScheduled = false;
+	if (InTactical())
+	{
+		default.BatchObjects.Length = 0; // see InTactical; the mission history carries these objects
+		default.BatchFrames = 0;
+		default.bMergeInFlight = false;
+		return;
+	}
 	if (`ONLINEEVENTMGR.SaveInProgress())
 	{
 		// sending while a save runs crashed the client (CoopAutosaveMgr); try again shortly
+		RescheduleFlush();
+		return;
+	}
+	// a guest between the campaign and its Avenger: a merge that reached it right after the campaign history and
+	// just before its Avenger map load crashed it ("GettingNameData", squadshow 2026-11-19; the host was changing the
+	// squad as the guest joined). Hold the batch until the guest says its map is up (CoopRoster), at most 60 s.
+	if (class'CoopRoster'.static.HoldMerges())
+	{
 		RescheduleFlush();
 		return;
 	}
@@ -417,13 +451,27 @@ static function FlushBatch()
 static function AlignHistory(int Target)
 {
 	local XComGameStateHistory History;
-	local int Added;
+	local int Added, Before;
 
 	History = `XCOMHISTORY;
+	// Only on the Avenger with a strategy ruleset. A guest that reconnected at the main menu got this before
+	// the campaign (soak-20261114): with no ruleset the submit added nothing and the loop never ended
+	// (the guest hung, 157 million script warnings).
+	if (`XCOMGAME == none || `XCOMGAME.GameRuleset == none || XComHeadquartersGame(class'WorldInfo'.static.GetWorldInfo().Game) == none)
+	{
+		`log("history align for frame" @ Target @ "skipped: not on the Avenger",, 'CoopCampaign');
+		return;
+	}
 	default.bApplyingRemote = true;
 	while (History.GetCurrentHistoryIndex() < Target)
 	{
+		Before = History.GetCurrentHistoryIndex();
 		`XCOMGAME.GameRuleset.SubmitGameState(class'XComGameStateContext_ChangeContainer'.static.CreateChangeState("Coop: align history"));
+		if (History.GetCurrentHistoryIndex() <= Before)
+		{
+			`log("history align stopped at frame" @ Before @ "of" @ Target $ ": a submitted frame was not added",, 'CoopCampaign');
+			break;
+		}
 		Added++;
 	}
 	default.bApplyingRemote = false;
@@ -461,6 +509,8 @@ function OnReceiveMergeGameState(XComGameState InGameState)
 
 function OnRemoteCommand(string Command, array<byte> RawParams)
 {
+	local int FromSlot;
+	local bool bForced;
 	local int Epoch;
 	local array<byte> Params;
 
@@ -478,7 +528,18 @@ function OnRemoteCommand(string Command, array<byte> RawParams)
 	}
 	else if (Command == "CoopBatonRequest")
 	{
-		if (default.bHasBaton && class'CoopEditGate'.static.IsEditing())
+		FromSlot = -1;
+		bForced = true;
+		if (RawParams.Length > 0)
+		{
+			FromSlot = class'XComGameStateNetworkManager'.static.GetCommandParam_Int(RawParams);
+			bForced = class'XComGameStateNetworkManager'.static.GetCommandParam_Int(RawParams) != 0;
+		}
+		if (default.bHasBaton && !bForced && FromSlot != class'XComGameState_CoopCampaign'.const.SLOT_HOST)
+		{
+			class'CoopBatonPrompt'.static.Ask(FromSlot);    // the holder decides
+		}
+		else if (default.bHasBaton && class'CoopEditGate'.static.IsEditing())
 		{
 			default.bGrantRequested = true; // granted by CoopEditGate when the last edit screen closes
 			`XCOMNETMANAGER.SendRemoteCommand("CoopBatonDeferred", Params);
@@ -487,6 +548,22 @@ function OnRemoteCommand(string Command, array<byte> RawParams)
 		else if (default.bHasBaton)
 		{
 			GrantBaton();
+		}
+		else if (class'CoopRole'.static.IsHost() && class'CoopRole'.default.ConnectedSlots.Length <= 1 && !default.bGrantPending)
+		{
+			// nobody holds it (two players: the asker does not, nor do we): the host is the authority, so it
+			// takes it and hands it over (two-PC play test 2026-11-19: both sides waited for each other)
+			`log("baton request: nobody held it; the host takes it and grants it",, 'CoopCampaign');
+			SetBaton(true);
+			if (class'CoopEditGate'.static.IsEditing())
+			{
+				default.bGrantRequested = true;
+				`XCOMNETMANAGER.SendRemoteCommand("CoopBatonDeferred", Params);
+			}
+			else
+			{
+				GrantBaton();
+			}
 		}
 		else
 		{
@@ -510,10 +587,22 @@ function OnRemoteCommand(string Command, array<byte> RawParams)
 		default.bRequestQueued = true;
 		`log("baton request queued by partner",, 'CoopCampaign');
 	}
+	else if (Command == "CoopBatonDenied")
+	{
+		default.bRequestSent = false;
+		`log("baton request: the holder said no",, 'CoopCampaign');
+		class'CoopEditGate'.static.RequestDenied();
+	}
 	else if (Command == "CoopBatonNotMine")
 	{
 		default.bRequestSent = false;
 		`log("baton request answered: partner does not hold it",, 'CoopCampaign');
+		// the host asked and its one guest does not hold it either: nobody does, the host takes it
+		if (class'CoopRole'.static.IsHost() && class'CoopRole'.default.ConnectedSlots.Length <= 1 && !default.bHasBaton)
+		{
+			`log("baton: nobody held it; the host takes it",, 'CoopCampaign');
+			SetBaton(true);
+		}
 	}
 	else if (Command == "CoopBatonAck")
 	{
