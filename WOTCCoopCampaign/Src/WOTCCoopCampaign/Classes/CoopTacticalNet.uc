@@ -32,6 +32,7 @@ var config array<int> CampaignAckSlots;    // campaign history sent after a miss
 var config array<int> RelayAckSlots;      // host: a guest's partial history was relayed to all guests, acks missing (by slot)
 var config int PendingSwitchSlot;      // host: a guest's "CoopSwitchTurn" waiting until the relay is acknowledged (-1 = none)
 var config int PendingSwitchInitiative, PendingSwitchIndex, PendingSwitchFlags;   // the rest of that switch
+var config string ChunkedKind;          // host: the whole send now going out in chunks ("campaign", "mission")
 
 static function Init()
 {
@@ -122,6 +123,25 @@ static function ArchiveBeforeSend()
 // it as the whole history. A guest's history survives its trip through the main menu.
 static function SendWhole(string Kind)
 {
+	// Chunked (CoopChunks.bChunkedWholeSend): the host's base goes out in chunks, every guest takes it as its own,
+	// then the usual delta (ChunkedWholeDone) brings them up to date. No size ceiling (the engine's whole send stops
+	// arriving above about 670 KB). Without a base (nothing sent since the game started and no prime) or without
+	// guests: the engine's whole send as before.
+	if (class'CoopChunks'.default.bChunkedWholeSend && class'CoopRole'.default.ConnectedSlots.Length > 0)
+	{
+		RestoreBase("host");
+		if (`XCOMNETMANAGER.BaseHistoryData.Length > 0)
+		{
+			default.ChunkedKind = Kind;
+			if (class'CoopChunks'.static.SendBytes(`XCOMNETMANAGER.BaseHistoryData, class'CoopChunks'.const.MODE_BASE, Kind))
+			{
+				`log(Kind @ "history: the base (" $ `XCOMNETMANAGER.BaseHistoryData.Length @ "bytes) goes out in chunks, then a delta; frames="
+					$ `XCOMHISTORY.GetNumGameStates(),, 'CoopHandoff');
+				return;
+			}
+		}
+		`log(Kind @ "history: no base to send in chunks: whole send",, 'CoopHandoff');
+	}
 	if (class'CoopLink'.default.bPartialResend && class'CoopLink'.default.WholeSendCount > 0)
 	{
 		RestoreBase("host");
@@ -134,6 +154,41 @@ static function SendWhole(string Kind)
 	class'CoopLink'.default.WholeSendCount++;
 }
 
+// Host: every guest took the chunked base (CoopChunks); the delta from it to now stands in for the whole history.
+static function ChunkedWholeDone()
+{
+	Send("CoopNextIsWhole");
+	`XCOMNETMANAGER.SendPartialHistory(`XCOMHISTORY, `XEVENTMGR);
+	class'CoopLink'.default.WholeSendCount++;
+	`log(default.ChunkedKind @ "history sent: chunked base + delta, frames=" $ `XCOMHISTORY.GetNumGameStates()
+		@ "base now" @ `XCOMNETMANAGER.BaseHistoryData.Length @ "bytes",, 'CoopHandoff');
+}
+
+// Host: the chunked base did not get through in time (CoopChunks.Tick): the engine's whole send.
+static function ChunkedWholeFailed()
+{
+	`XCOMNETMANAGER.SendHistory(`XCOMHISTORY, `XEVENTMGR);
+	class'CoopLink'.default.WholeSendCount++;
+	`log(default.ChunkedKind @ "history sent whole (chunked base failed), frames=" $ `XCOMHISTORY.GetNumGameStates(),, 'CoopHandoff');
+}
+
+// Host, before its server opens (CoopLink.HostOpen): with nobody connected, SendHistory fills BaseHistoryData and sends
+// nothing (chunktest 2026-11-24), so the first whole send to a joining guest has a base to send in chunks.
+static function PrimeBase(string Where)
+{
+	local XComGameStateNetworkManager NetMgr;
+
+	NetMgr = `XCOMNETMANAGER;
+	if (!class'CoopChunks'.default.bChunkedWholeSend || !class'CoopRole'.static.CoopActive() || NetMgr.HasConnections())
+	{
+		return;
+	}
+	NetMgr.SendHistory(`XCOMHISTORY, `XEVENTMGR);
+	default.SavedBase = NetMgr.BaseHistoryData;
+	default.SavedBaseAt = class'WorldInfo'.static.GetWorldInfo().RealTimeSeconds;
+	`log("history base primed (" $ Where $ "):" @ NetMgr.BaseHistoryData.Length @ "bytes, frames=" $ `XCOMHISTORY.GetNumGameStates(),, 'CoopHandoff');
+}
+
 // The partial history is a delta against BaseHistoryData, the last history data both ends hold. A guest that left
 // the Avenger after a connection timeout came back with it empty ("Base size mismatch: 378172 != 0", soakpartial
 // 2026-11-18; the engine then sent the whole history). Keep a copy while connected (CoopLink.Tick, every 5 s and on
@@ -143,7 +198,7 @@ static function KeepBase()
 	local XComGameStateNetworkManager NetMgr;
 	local float Now;
 
-	if (!class'CoopLink'.default.bPartialResend)
+	if (!class'CoopLink'.default.bPartialResend && !class'CoopChunks'.default.bChunkedWholeSend)
 	{
 		return;
 	}
@@ -222,6 +277,7 @@ static function bool TakeAck(out array<int> Pending, int Slot)
 // CoopRole, host: a guest is gone; stop waiting for its acknowledgements.
 static function OnGuestGone(int Slot)
 {
+	class'CoopChunks'.static.OnGuestGone(Slot);
 	if (default.CampaignAckSlots.Find(Slot) != INDEX_NONE && TakeAck(default.CampaignAckSlots, Slot))
 	{
 		Send("CoopEnterAvenger");

@@ -16,18 +16,27 @@
 //               MODE_FEED:    ReceiveHistory(0, bytes), then "CoopChunkDone"(id, slot, frames)
 //             host, MODE_FEED: every guest done -> "CoopEnterAvenger" (the guest opens the Avenger from it)
 //
-//           Experiment only (2026-11-24): driven by the test bot steps @chunkbase, @chunkfeed, @chunkpause.
-//           Nothing in normal play calls it yet.
+//               MODE_BASE:    takes the bytes as its own BaseHistoryData (and the kept copy), then
+//                             "CoopChunkDone"; host, every guest done -> CoopTacticalNet.ChunkedWholeDone: the usual
+//                             partial history ("CoopNextIsWhole" + SendPartialHistory) brings them up to date
+//
+//           In play (bChunkedWholeSend, off by default): every whole history (a join, a mission, the campaign after a
+//           mission) goes out as the host's base in chunks plus a delta (CoopTacticalNet.SendWhole), so its size has no
+//           ceiling. A send that does not finish in ChunkTimeoutSeconds falls back to the engine's whole send.
+//           Experiment steps: @chunkbase, @chunkfeed, @chunkprime, @chunkpause.
 //           A plain Object; the state lives in class defaults.
 //---------------------------------------------------------------------------------------
 class CoopChunks extends Object config(CoopCampaign);
 
 const MODE_COMPARE = 0;
 const MODE_FEED = 1;
+const MODE_BASE = 2;
 
 var config int ChunkBytes;          // bytes per chunk; a remote command must fit in one bunch (16384 overflowed it:
                                     // "XCom channel bunch overflowed", the connection closed; chunktest 2026-11-24)
 var config int ChunkWindow;         // chunks in flight ahead of the slowest guest's ack
+var config bool bChunkedWholeSend;  // whole histories go out as the base in chunks plus a delta (CoopTacticalNet.SendWhole)
+var config float ChunkTimeoutSeconds;    // host: a base send not done by then falls back to the engine's whole send
 
 // runtime (config only so the default may be written)
 var config bool bInited;
@@ -35,6 +44,7 @@ var config bool bInited;
 var config array<byte> OutData;
 var config int OutId, OutCount, OutNext, OutMode;
 var config float OutStartedAt;
+var config bool bOutActive;        // host: a send runs (MODE_BASE waits for every guest's CoopChunkDone)
 var config array<int> OutSlots;     // guests the send waits for
 var config array<int> OutAcked;     // by OutSlots index: chunks acknowledged
 var config array<int> OutDone;      // by OutSlots index: 1 when the guest fed the history (MODE_FEED)
@@ -104,6 +114,7 @@ static function bool SendBytes(array<byte> Data, int Mode, string Why)
 	}
 	default.OutData = Data;
 	default.OutId++;
+	default.bOutActive = true;
 	default.OutMode = Mode;
 	default.OutCount = (Data.Length + default.ChunkBytes - 1) / default.ChunkBytes;
 	default.OutNext = 0;
@@ -197,7 +208,14 @@ static function OnDone(int Id, int Slot, int Frames)
 	{
 		default.OutDone[Idx] = 1;
 	}
-	`log("chunks: player" @ Slot @ "fed send" @ Id @ "to its engine: frames=" $ Frames @ "(host has" @ `XCOMHISTORY.GetNumGameStates() $ ")",, 'CoopChunks');
+	if (default.OutMode == MODE_BASE)
+	{
+		`log("chunks: player" @ Slot @ "took send" @ Id @ "as its base:" @ Frames @ "bytes",, 'CoopChunks');
+	}
+	else
+	{
+		`log("chunks: player" @ Slot @ "fed send" @ Id @ "to its engine: frames=" $ Frames @ "(host has" @ `XCOMHISTORY.GetNumGameStates() $ ")",, 'CoopChunks');
+	}
 	for (i = 0; i < default.OutDone.Length; i++)
 	{
 		if (default.OutDone[i] == 0)
@@ -205,11 +223,63 @@ static function OnDone(int Id, int Slot, int Frames)
 			return;
 		}
 	}
+	default.bOutActive = false;
 	if (default.OutMode == MODE_FEED)
 	{
 		class'CoopTacticalNet'.static.Send("CoopEnterAvenger");
 		`log("chunks: every guest has the history: telling them to enter the Avenger",, 'CoopChunks');
 	}
+	else if (default.OutMode == MODE_BASE)
+	{
+		`log("chunks: every guest has the base (send" @ Id $ ") after" @ (Now() - default.OutStartedAt) @ "s",, 'CoopChunks');
+		class'CoopTacticalNet'.static.ChunkedWholeDone();
+	}
+}
+
+// CoopLink.Tick, host: a base send that hangs (a guest left, a chunk lost) falls back to the engine's whole send.
+static function Tick()
+{
+	if (!default.bOutActive || default.OutMode != MODE_BASE || class'CoopRole'.static.IsGuest())
+	{
+		return;
+	}
+	Pump();
+	if (Now() - default.OutStartedAt > default.ChunkTimeoutSeconds || Now() < default.OutStartedAt)
+	{
+		default.bOutActive = false;
+		`log("chunks: send" @ default.OutId @ "not done after" @ int(default.ChunkTimeoutSeconds) @ "s: whole send instead",, 'CoopChunks');
+		class'CoopTacticalNet'.static.ChunkedWholeFailed();
+	}
+}
+
+// Host: a guest that leaves is not waited for (its acks and its done never come).
+static function OnGuestGone(int Slot)
+{
+	local int Idx, i;
+
+	Idx = default.OutSlots.Find(Slot);
+	if (!default.bOutActive || Idx == INDEX_NONE)
+	{
+		return;
+	}
+	default.OutSlots.Remove(Idx, 1);
+	default.OutAcked.Remove(Idx, 1);
+	default.OutDone.Remove(Idx, 1);
+	`log("chunks: player" @ Slot @ "left during send" @ default.OutId $ "; not waiting for it",, 'CoopChunks');
+	if (default.OutSlots.Length == 0)
+	{
+		default.bOutActive = false;
+		return;
+	}
+	for (i = 0; i < default.OutDone.Length; i++)
+	{
+		if (default.OutDone[i] == 0)
+		{
+			Pump();
+			return;
+		}
+	}
+	OnDone(default.OutId, default.OutSlots[0], `XCOMHISTORY.GetNumGameStates());
 }
 
 // Experiment: does the engine send a history while game state sending is paused, and does BaseHistoryData change?
@@ -316,6 +386,18 @@ static function Complete()
 		return;
 	}
 	NetMgr = `XCOMNETMANAGER;
+	if (default.InMode == MODE_BASE)
+	{
+		NetMgr.BaseHistoryData = default.InData;
+		class'CoopTacticalNet'.default.SavedBase = default.InData;
+		class'CoopTacticalNet'.default.SavedBaseAt = Now();
+		`log("chunks: took" @ default.InData.Length @ "bytes as the history base",, 'CoopChunks');
+		class'XComGameStateNetworkManager'.static.AddCommandParam_Int(default.InId, Params);
+		class'XComGameStateNetworkManager'.static.AddCommandParam_Int(class'CoopRole'.static.LocalSlot(), Params);
+		class'XComGameStateNetworkManager'.static.AddCommandParam_Int(default.InData.Length, Params);
+		`XCOMNETMANAGER.SendRemoteCommand("CoopChunkDone", Params);
+		return;
+	}
 	if (default.InMode == MODE_COMPARE)
 	{
 		Mine = Hash(NetMgr.BaseHistoryData);

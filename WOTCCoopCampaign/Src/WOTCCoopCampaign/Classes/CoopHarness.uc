@@ -413,6 +413,31 @@ function RunHarnessCommand(string Cmd)
 	{
 		StartWait('Slot', int(Mid(Cmd, 9)) - 1);
 	}
+	// "@lobbyleave" / "@lobbyclose": the lobby screen's Leave / Close lobby button
+	else if (Cmd ~= "lobbyleave" || Cmd ~= "lobbyclose")
+	{
+		if (CoopLobbyScreen(`SCREENSTACK.GetFirstInstanceOf(class'CoopLobbyScreen')) != none)
+		{
+			CoopLobbyScreen(`SCREENSTACK.GetFirstInstanceOf(class'CoopLobbyScreen')).Leave();
+		}
+		else
+		{
+			`log("lobby: no lobby screen open",, 'CoopLobby');
+		}
+	}
+	// "@difficultystart": the difficulty screen's start button (a new campaign the way a player starts one)
+	else if (Cmd ~= "difficultystart")
+	{
+		if (UIShellDifficulty(`SCREENSTACK.GetFirstInstanceOf(class'UIShellDifficulty')) != none)
+		{
+			`log("difficulty screen: start",, 'CoopHarness');
+			UIShellDifficulty(`SCREENSTACK.GetFirstInstanceOf(class'UIShellDifficulty')).OnDifficultyConfirm(UIShellDifficulty(`SCREENSTACK.GetFirstInstanceOf(class'UIShellDifficulty')).m_StartButton);
+		}
+		else
+		{
+			`log("difficulty screen: not open",, 'CoopHarness');
+		}
+	}
 	else if (Cmd ~= "lobbylog")
 	{
 		LogLobby();

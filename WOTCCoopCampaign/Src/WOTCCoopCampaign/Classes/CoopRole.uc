@@ -48,13 +48,17 @@ static function bool CoopActive()
 }
 
 // Host: the lowest guest slot not connected now (1..3), or -1 when all are taken.
-static function int FreeGuestSlot()
+// bSkipAwaited: for a guest with no claim to a slot, leave out the slots of guests the host is waiting for after a
+// mission build or the return to the Avenger (soakfresh16 2026-11-25: a new guest that asked first took the slot of
+// the guest coming back, the returning guest was put in the same slot, and when the new one left the host counted
+// slot 1 as gone and launched the next mission without anyone).
+static function int FreeGuestSlot(optional bool bSkipAwaited)
 {
 	local int Slot;
 
 	for (Slot = 1; Slot < class'XComGameState_CoopCampaign'.const.MAX_PLAYERS; Slot++)
 	{
-		if (default.ConnectedSlots.Find(Slot) == INDEX_NONE)
+		if (default.ConnectedSlots.Find(Slot) == INDEX_NONE && !(bSkipAwaited && class'CoopLink'.static.SlotAwaited(Slot)))
 		{
 			return Slot;
 		}

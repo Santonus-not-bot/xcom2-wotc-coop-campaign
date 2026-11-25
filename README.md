@@ -20,13 +20,19 @@ Windows x64.
 
 1. Every player installs the same mods. The guest's game compares its mod list with the
    host's and refuses to join on a mismatch.
-2. The host starts or loads a campaign and clicks **Host co-op** on the Avenger. That
-   turns a single-player campaign into a co-op one.
-3. Each guest clicks **Join co-op** on the main menu and enters the host's address. The
-   default port is 7778 (UDP); the host may have to open it.
-4. On the Armory soldier screen the host gives soldiers to players (**Owner** button). In
+2. The main menu has three co-op entries after New Campaign: **Co-op Campaign**,
+   **Balanced Co-op Campaign** and **Scenario Mode**. Each opens a lobby.
+3. In the lobby the host clicks **Host this game**; friends open any co-op entry, click
+   **Join a friend** and enter the host's address. The default port is 7778 (UDP); the
+   host may have to open it. The lobby lists who is connected, and the host can make any
+   friend player 2, 3 or 4.
+4. The host starts: a new campaign (through the game's own difficulty screen) or a saved
+   one, or a scenario (early, mid or late game). Friends stay connected meanwhile and come
+   along into the first mission or onto the Avenger.
+5. A campaign already running can still go co-op: **Host co-op** on the Avenger.
+6. On the Armory soldier screen the host gives soldiers to players (**Owner** button). In
    squad select the host sets which player gets each slot.
-5. Only the host saves (Ironman too). After loading, the host's game opens the server by
+7. Only the host saves (Ironman too). After loading, the host's game opens the server by
    itself, and guests that drop reconnect on their own.
 
 Map pings and text chat work in missions and on the Avenger. Owner tags next to the unit
@@ -34,6 +40,25 @@ flags show whose soldier is whose (HOST gold, P2 green, P3 pink, P4 orange). A b
 shows whose turn it is.
 
 ## What works (each item has an automated test)
+
+**Main menu and modes**
+
+- **Main menu** (`CoopShellWatch`, `CoopShellScene`): the three co-op entries in the
+  game's own menu row, and soldiers from the character pool (random ones if it is empty)
+  standing in the menu's 3D scene.
+- **Lobby** (`CoopLobby`, `CoopLobbyScreen`): host or join, who is connected, the host
+  reassigns player numbers; the friends stay connected through the difficulty screen and
+  rejoin when the first mission or the Avenger is ready (`CoopNewCampaign`).
+- **Balanced Co-op Campaign** (`CoopBalanced`, `CoopSitReps`): the squad is the normal
+  size times the number of players (4 per player at the start; the squad size upgrades
+  count too). Each mission is rolled at a higher alert level (+1 per extra player), every
+  regular pod gets one more unit per extra player, and one enemy comes from 4 force levels
+  later. Chosen when the campaign starts. Squads above 6 need robojumper's Squad Select
+  (tested with it).
+- **Scenario Mode, first version** (`CoopScenario`): one mission without a campaign, the
+  way War of the Chosen's Skirmish mode builds it. 12 operators split among the players;
+  early / mid / late set force level, alert, ranks and gear tier. The first turn waits
+  until every player has loaded the map; at the end everyone goes back to the main menu.
 
 **Avenger and Geoscape**
 
@@ -110,20 +135,32 @@ shows whose turn it is.
 | `CoopGuestRights.bHostDecidesCampaign` | true | Guests manage only their soldiers |
 | `CoopSteamJoin.bSteamInvites` | false | Steam invites (untested) |
 | `CoopEditGate.EditScreens` | list | Screens that need the baton |
+| `CoopBalanced.PodsPerPlayer` | 1 | Balanced: units added to each regular pod per extra player |
+| `CoopBalanced.AlertPerPlayer` | 1 | Balanced: alert level added per extra player |
+| `CoopBalanced.LaterEnemyForceLevel` | 4 | Balanced: how much later the one later enemy is |
+| `CoopScenario.WaitForPlayersSeconds` | 180 | Scenario: how long the first turn waits for everyone |
+| `CoopChunks.bChunkedWholeSend` | false | Whole histories go out in chunks (no size ceiling; see Known issues) |
 
 ## Known issues
 
 - Untested with two Steam accounts, over Steam (invites and Steam sockets) and with more
   than two PCs.
 - Very long campaigns: a whole-history send above about 670 KB never arrives (around
-  mission 14 of a test campaign). `CoopLink.bPartialResend=true` sends deltas
-  instead; it passed 16 missions on one PC but is off by default.
+  mission 14 of a test campaign). Two fixes, both off by default: `CoopLink.bPartialResend=true`
+  sends returning guests deltas (16 missions on one PC), and `CoopChunks.bChunkedWholeSend=true`
+  sends the history in small chunks with no size limit (16 missions on one PC with histories up to
+  765 KB, and a new guest joining after mission 13). Neither is tested on two PCs.
 - A guest goes through the main menu during a mission launch (covered by the loading
   screen); only the host launches missions.
 - A guest that joins mid-mission can lose its first turn.
 - A guest who drops mid-turn loses that turn's actions; the host plays on from there.
 - Mods that replace `UIUnitFlag` conflict with the owner tags. Mods that replace
-  `XComHeadquartersController` conflict with the guest's Avenger exit.
+  `XComHeadquartersController` or `XComShellController` conflict with the guest's handling of
+  a lost host (on the Avenger, on the main menu).
+- Loading a save from the lobby works for a save made on the Avenger; a save made inside a
+  mission is not handled (the lobby's friends are not brought into the mission).
+- A new co-op campaign is started without the tutorial (the tutorial mission is single-player
+  and builds the campaign only after it).
 - A guest's visualization that times out while it waits for its turn is finished by the
   mod so the turn can start. The cause (an AI reveal timing out on the guest) is unknown.
 - Popups (research done, new missions) show only on the machine on the Geoscape, which is

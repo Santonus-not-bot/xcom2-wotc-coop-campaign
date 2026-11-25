@@ -24,6 +24,12 @@ static function Choose(bool bBalanced)
 	`log("new co-op campaign chosen: balanced=" $ class'CoopHarness'.static.BoolStr(bBalanced),, 'CoopMenu');
 }
 
+// A new co-op campaign is chosen and not started yet (UIScreenListener_CoopDifficulty).
+static function bool IsChosen()
+{
+	return default.PendingMode != MODE_NONE;
+}
+
 // The main menu without a choice (another menu path, or back out): forget it.
 static function Forget()
 {

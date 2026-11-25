@@ -94,6 +94,7 @@ static function bool HostOpen(int Port, optional bool bSteam)
 	local URL ServerURL;
 	local string Error;
 
+	class'CoopTacticalNet'.static.PrimeBase("server opens on port" @ Port);    // chunked whole sends need a base
 	ServerURL.Port = Port;
 	if (bSteam)
 	{
@@ -122,6 +123,28 @@ static function bool HostOpen(int Port, optional bool bSteam)
 // close/reopen (those reopen by themselves) and not while a server is open.
 static function HostLoadedGame(string Where)
 {
+	local int Slot;
+
+	// A save loaded from the co-op lobby ("Load" there): the lobby's server stays open through the load and its friends
+	// stay connected on the main menu, without the campaign (lobbyload 2026-11-25: they waited in the lobby until the
+	// host quit). On the Avenger they get it the way a join does. Not handled: a mid-mission save loaded from the lobby.
+	if (class'CoopLobby'.default.bHosting && !class'CoopRole'.static.IsGuest() && `XCOMNETMANAGER.HasServerConnection())
+	{
+		class'CoopLobby'.default.bHosting = false;
+		class'CoopLobby'.default.Mode = class'CoopLobby'.const.MODE_NONE;
+		`log("host: co-op campaign loaded on" @ Where @ "from the lobby, players" @ SlotList(class'CoopRole'.default.ConnectedSlots)
+			@ "connected: the campaign goes to them",, 'CoopLink');
+		if (!class'CoopRole'.static.CoopActive())
+		{
+			`log("host: the loaded save is not a co-op campaign: use Host co-op on the Avenger",, 'CoopLink');
+			return;
+		}
+		foreach class'CoopRole'.default.ConnectedSlots(Slot)
+		{
+			HostJoinedOnAvenger(Slot);
+		}
+		return;
+	}
 	if (!default.bAutoHostOnLoad || !class'CoopRole'.static.CoopActive() || class'CoopRole'.static.IsGuest()
 		|| `XCOMNETMANAGER.HasServerConnection() || default.bReopenPending || default.bReturnPending || default.bReopenAfterReturn)
 	{
@@ -295,6 +318,14 @@ static function HostJoinedOnAvenger(int Slot)
 	class'CoopLinkTimer'.static.Ensure();
 }
 
+// CoopRole.FreeGuestSlot: a guest slot the host is waiting for (it was in the mission and has not come back yet).
+static function bool SlotAwaited(int Slot)
+{
+	return default.MissionSlots.Find(Slot) != INDEX_NONE && class'CoopRole'.default.ConnectedSlots.Find(Slot) == INDEX_NONE
+		&& (default.bReopenPending || default.bReturnPending || default.bReopenAfterReturn || default.bCampaignWait
+			|| (default.bMissionRunning && !default.bMissionHistorySent));
+}
+
 static function bool AllMissionSlotsBack()
 {
 	local int Slot;
@@ -426,6 +457,14 @@ static function GuestLostHost(int Slot)
 	class'CoopLinkTimer'.static.Ensure();
 }
 
+// CoopShellController, guest on the main menu (in a lobby or reconnecting): CoopLink handles the lost connection.
+static function bool GuestLostHostOnMenu()
+{
+	return default.GuestHost != "" && default.bReconnecting
+		&& (class'CoopLobby'.default.bGuestInLobby || class'CoopRole'.static.CoopActive())
+		&& XComShell(class'WorldInfo'.static.GetWorldInfo().Game) != none;
+}
+
 // CoopHeadquartersController, guest on the Avenger: the game reports the lost connection after CoopJoin's
 // ConnectionClosed handler ran GuestLostHost. True when CoopLink takes over the way to the main menu.
 static function bool GuestLostHostOnAvenger()
@@ -504,6 +543,7 @@ static function Tick()
 	class'CoopChunks'.static.Init();    // chunked history sends (experiment; idle unless a send runs)
 	class'CoopLobby'.static.Init();     // the main menu's lobby: guests hear "CoopLobby"
 	class'CoopLobby'.static.Tick();
+	class'CoopChunks'.static.Tick();
 	class'CoopActivity'.static.Tick();
 	class'CoopRoster'.static.Tick();
 	class'CoopGeoWatch'.static.HostTick();

@@ -117,8 +117,10 @@ static function HostOnHello(array<byte> RawParams)
 		}
 		else
 		{
+			// a wanted slot is a claim (a guest coming back, after a restart too); without one, not a slot the
+			// host is waiting for
 			Slot = (Want > 0 && Want < class'XComGameState_CoopCampaign'.const.MAX_PLAYERS && class'CoopRole'.default.ConnectedSlots.Find(Want) == INDEX_NONE)
-				? Want : class'CoopRole'.static.FreeGuestSlot();
+				? Want : class'CoopRole'.static.FreeGuestSlot(true);
 		}
 		if (Slot < 0)
 		{
