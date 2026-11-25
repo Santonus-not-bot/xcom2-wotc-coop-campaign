@@ -17,6 +17,12 @@ function NotifyConnectionError(EProgressMessageType MessageType, optional string
 		`log("co-op: skipped the game's lost-connection handling on the main menu, type=" $ MessageType,, 'CoopLink');
 		// as the game's handler does: the engine repeats the error every frame until the dead connection is gone
 		bIgnoreNetworkMessages = true;
+		// The game's handler reloaded the map, which dropped the dead connection; skipping it left the failed
+		// attempt's net driver up, HasClientConnection() stayed true and CoopLink never tried again (soakfresh16
+		// 2026-11-25, second run: a reconnect attempt on the main menu timed out and the guest sat there for good).
+		// CoopLink drops it on its next tick, then this controller hears network messages again.
+		class'CoopLink'.default.bTearDownPending = true;
+		class'CoopLinkTimer'.static.Ensure();
 		return;
 	}
 	super.NotifyConnectionError(MessageType, Message, Title);

@@ -610,6 +610,11 @@ static function Tick()
 			`XCOMNETMANAGER.ResetConnectionData();
 			`log("guest: dropped the dead connection to the host",, 'CoopLink');
 		}
+		// main menu: CoopShellController ignored network messages until the dead connection was gone
+		if (CoopShellController(class'WorldInfo'.static.GetWorldInfo().GetALocalPlayerController()) != none)
+		{
+			CoopShellController(class'WorldInfo'.static.GetWorldInfo().GetALocalPlayerController()).bIgnoreNetworkMessages = false;
+		}
 		// Leave the mission map before the next history arrives: a guest that reconnected on the mission map
 		// and received the campaign there crashed ("GettingNameData", run missionend-20261112-174209). From
 		// the main menu it reconnects and enters the Avenger or the next mission like any joining guest.
