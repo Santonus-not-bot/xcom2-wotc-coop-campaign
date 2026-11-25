@@ -8,8 +8,10 @@ static event OnLoadedSavedGame()
 {
 }
 
+// A new campaign: co-op if it was started from the main menu's "Co-op Campaign" submenu (CoopNewCampaign).
 static event InstallNewCampaign(XComGameState StartState)
 {
+	class'CoopNewCampaign'.static.OnNewCampaign(StartState);
 }
 
 // Strategy, just before the map travel to a mission: the host builds the mission without a connection

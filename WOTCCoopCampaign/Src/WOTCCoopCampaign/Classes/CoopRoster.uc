@@ -140,7 +140,8 @@ static function Tick()
 
 	// a guest sends its name as soon as it has a slot, also on the main menu before the campaign arrives (it is not
 	// "co-op active" there): the host's join toast waits for it (avengerfeed 2026-11-19: "Player 2 joined as Player 2")
-	if (!class'CoopRole'.static.CoopActive() && !(GuestSide() && class'CoopRole'.default.AssignedSlot > 0))
+	if (!class'CoopRole'.static.CoopActive() && !(GuestSide() && class'CoopRole'.default.AssignedSlot > 0)
+		&& !class'CoopLobby'.static.IsHostingLobby())    // the lobby on the main menu shows the roster too
 	{
 		return;
 	}

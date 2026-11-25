@@ -356,6 +356,14 @@ function OnRemoteCommand(string Command, array<byte> RawParams)
 		}
 		return;
 	}
+	if (Command == "CoopScenarioOver")
+	{
+		if (class'CoopRole'.static.IsGuest())
+		{
+			class'CoopScenario'.static.GuestScenarioOver();
+		}
+		return;
+	}
 	if (Command == "CoopNextIsWhole")
 	{
 		if (class'CoopRole'.static.IsGuest())

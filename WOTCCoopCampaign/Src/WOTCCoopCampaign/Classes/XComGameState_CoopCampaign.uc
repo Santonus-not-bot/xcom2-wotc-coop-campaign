@@ -15,6 +15,9 @@ const MAX_PLAYERS = 4;
 var array<string> SlotNames;        // last known player name per slot (display only)
 var int PlayerCount;                // players in this campaign, 1..MAX_PLAYERS
 var array<int> SquadSlotOwner;      // per squad slot index: player slot (set by the host per mission)
+var bool bBalanced;                 // balanced co-op campaign (CoopBalanced), chosen at the start
+var bool bScenario;                 // a scenario mode mission, not a campaign (CoopScenario)
+var int ScenarioStage;              // its game stage (CoopScenario.STAGE_*)
 
 static function XComGameState_CoopCampaign Get(optional bool bAllowNone = true)
 {
@@ -104,7 +107,7 @@ function string Describe()
 	{
 		Out $= string(SquadSlotOwner[i]);
 	}
-	return "coop id=" $ ObjectID @ "players=" $ PlayerCount @ "squadOwners=" $ Out;
+	return "coop id=" $ ObjectID @ "players=" $ PlayerCount @ "balanced=" $ bBalanced @ "squadOwners=" $ Out;
 }
 
 // Not bSingletonStateType: that flag needs native SingletonCopyForHistoryDiffDuplicate support for saves.

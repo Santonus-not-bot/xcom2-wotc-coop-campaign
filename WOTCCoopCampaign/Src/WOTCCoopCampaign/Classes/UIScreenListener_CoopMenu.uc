@@ -12,15 +12,19 @@ event OnInit(UIScreen Screen)
 
 	if (UIShell(Screen) != none)
 	{
-		Button = Screen.Spawn(class'UIButton', Screen);
-		Button.InitButton('CoopJoinButton', "Join co-op", OnJoinClicked);
-		Button.AnchorBottomLeft();
-		Button.SetPosition(40, -110);
+		// "Co-op Campaign", "Balanced Co-op Campaign" and "Scenario Mode" (each opens the lobby) in the game's own
+		// menu row, and the menu scene
+		Screen.Spawn(class'CoopShellWatch', Screen).Init(UIShell(Screen));
 		AddStatus(Screen, 40, -70, true);
 	}
 	else if (UIAvengerHUD(Screen) != none)
 	{
 		class'CoopLink'.static.HostLoadedGame("the Avenger");    // a co-op campaign's save: host again
+		if (class'CoopNewCampaign'.static.TakeHostOnAvenger() && !class'CoopRole'.static.IsGuest() && !class'CoopMenu'.static.IsHosting())
+		{
+			`log("new co-op campaign reached the Avenger: hosting",, 'CoopMenu');
+			class'CoopMenu'.static.HostFromAvenger();    // a campaign started from the "Co-op Campaign" menu
+		}
 		if (!class'CoopRole'.static.IsGuest() && !class'CoopMenu'.static.IsHosting())
 		{
 			Button = Screen.Spawn(class'UIButton', Screen);
@@ -29,6 +33,15 @@ event OnInit(UIScreen Screen)
 			Button.SetPosition(-160, 170);
 		}
 		AddStatus(Screen, -720, 210, false);
+	}
+}
+
+// Back on the main menu (the player left the difficulty screen without starting): forget a new co-op choice.
+event OnReceiveFocus(UIScreen Screen)
+{
+	if (UIShell(Screen) != none)
+	{
+		class'CoopNewCampaign'.static.Forget();
 	}
 }
 

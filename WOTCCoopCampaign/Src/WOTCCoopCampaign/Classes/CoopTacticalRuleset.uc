@@ -31,6 +31,7 @@
 //---------------------------------------------------------------------------------------
 class CoopTacticalRuleset extends X2TacticalGameRuleset;
 
+var float WaitPlayersUntil;      // scenario mode, host: the first turn's wait for the players ends here (TurnPhase_CoopWaitPlayers)
 var int AcksNeeded;        // partial history sent: acknowledgements still missing (host: one per connected guest)
 var bool bResumeAfterHandoff;
 var bool bMissionSent;     // host: the mission history went to the guests on this map
@@ -254,6 +255,14 @@ simulated state TurnPhase_UnitActions
 				{
 					class'CoopLink'.static.HostLoadedGame("a mission");
 				}
+				// scenario mode: the players join after the host started; the first turn waits for them, else they
+				// lose it (their groups are played by the host until they are in)
+				else if (class'CoopScenario'.static.IsScenario() && class'CoopLink'.default.MissionSlots.Length > 0
+					&& !class'CoopScenario'.static.PlayersReady())
+				{
+					GotoState('TurnPhase_CoopWaitPlayers');
+					return;
+				}
 			}
 			super.BeginState(PreviousStateName);
 			return;
@@ -324,9 +333,26 @@ simulated state EndTacticalGame
 {
 	simulated event BeginState(name PreviousStateName)
 	{
+		class'CoopScenario'.static.HostScenarioOver();    // scenario mode: the guests go to the main menu
 		class'CoopLink'.static.HostCloseForReturn();
 		super.BeginState(PreviousStateName);
 	}
+}
+
+// Scenario mode, host: before the first turn, until every expected player has loaded the mission (or the time is up).
+simulated state TurnPhase_CoopWaitPlayers
+{
+Begin:
+	WaitPlayersUntil = WorldInfo.RealTimeSeconds + class'CoopScenario'.default.WaitForPlayersSeconds;
+	`log("scenario: first turn waits for the players (up to" @ int(class'CoopScenario'.default.WaitForPlayersSeconds) @ "s)",, 'CoopScenario');
+	class'CoopRoster'.static.Toast(class'CoopScenario'.static.WaitText());
+	while (!class'CoopScenario'.static.PlayersReady() && WorldInfo.RealTimeSeconds < WaitPlayersUntil)
+	{
+		sleep(0.5);
+	}
+	`log("scenario: first turn starts: players ready=" $ class'CoopHarness'.static.BoolStr(class'CoopScenario'.static.PlayersReady())
+		@ "connected=" $ class'CoopLink'.static.SlotList(class'CoopRole'.default.ConnectedSlots),, 'CoopScenario');
+	GotoState('TurnPhase_UnitActions');
 }
 
 simulated state TurnPhase_CoopHandoff

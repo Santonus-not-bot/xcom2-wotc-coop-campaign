@@ -189,6 +189,11 @@ function PollWait()
 			`log("endturn retry result=" $ BoolStr(XComTacticalController(GetALocalPlayerController()).PerformEndTurn(ePlayerEndTurnType_PlayerInput)),, 'CoopHarness');
 		}
 	}
+	else if (WaitKind == 'Slot')
+	{
+		// "@waitslot N": this guest plays player N (a slot the host gave or moved it to)
+		bMet = class'CoopRole'.default.AssignedSlot == WaitArg;
+	}
 	else if (WaitKind == 'GrantReq')
 	{
 		bMet = class'CoopSession'.default.bGrantRequested; // the partner asked while our edit screen is open
@@ -214,6 +219,8 @@ static function string BoolStr(bool b)
 
 function RunHarnessCommand(string Cmd)
 {
+	local array<string> Args;
+
 	if (Cmd ~= "endturn" && IsMyXComTurn())
 	{
 		// end the turn, then wait until it is really over (see 'EndTurn' in PollWait)
@@ -355,6 +362,103 @@ function RunHarnessCommand(string Cmd)
 	else if (Cmd ~= "histinfo")
 	{
 		LogHistoryInfo();
+	}
+	// chunked history experiment (CoopChunks): send the host's encoded history (BaseHistoryData) in chunks;
+	// chunkbase: the guest compares it with its own; chunkfeed: the guest hands it to ReceiveHistory, then enters
+	// the Avenger from it; chunkpause: does SendHistory send anything while game state sending is paused?
+	else if (Cmd ~= "chunkbase" || Left(Cmd, 10) ~= "chunkbase ")
+	{
+		if (Len(Cmd) > 10)
+		{
+			class'CoopChunks'.default.ChunkBytes = int(Mid(Cmd, 10));
+		}
+		class'CoopChunks'.static.SendBytes(`XCOMNETMANAGER.BaseHistoryData, class'CoopChunks'.const.MODE_COMPARE, "bot: base");
+	}
+	else if (Cmd ~= "chunkfeed" || Left(Cmd, 10) ~= "chunkfeed ")
+	{
+		if (Len(Cmd) > 10)
+		{
+			class'CoopChunks'.default.ChunkBytes = int(Mid(Cmd, 10));
+		}
+		class'CoopChunks'.static.SendBytes(`XCOMNETMANAGER.BaseHistoryData, class'CoopChunks'.const.MODE_FEED, "bot: feed");
+	}
+	// balanced co-op campaign (CoopBalanced): "@balanced 0|1", "@balanceapply [SOURCE]" (the mission @launch would
+	// pick), "@aliens" (tactical: the alien units on the map)
+	else if (Left(Cmd, 9) ~= "balanced ")
+	{
+		class'CoopBalanced'.static.SetBalanced(Mid(Cmd, 9) == "1");
+	}
+	else if (Cmd ~= "balanceapply" || Left(Cmd, 13) ~= "balanceapply ")
+	{
+		class'CoopBalanced'.static.ApplyToMission(class'CoopBalanced'.static.LaunchableMission(name(Mid(Cmd, 13))), "bot");
+	}
+	// lobby (CoopLobby): "@lobby campaign|balanced|scenario" opens it and hosts; "@lobbyjoin IP" opens it and joins;
+	// "@lobbyassign PLAYER NEWPLAYER" (2-4) moves a guest; "@lobbylog" logs the rows; "@lobbystart new|load|early|mid|late"
+	else if (Left(Cmd, 6) ~= "lobby ")
+	{
+		class'CoopShellWatch'.static.OpenLobby(LobbyMode(Mid(Cmd, 6)));
+		class'CoopLobby'.static.HostLobby(LobbyMode(Mid(Cmd, 6)));
+	}
+	else if (Left(Cmd, 10) ~= "lobbyjoin ")
+	{
+		class'CoopShellWatch'.static.OpenLobby(0);
+		class'CoopLink'.static.GuestConnect(Mid(Cmd, 10), class'CoopLink'.default.DefaultPort);
+	}
+	else if (Left(Cmd, 12) ~= "lobbyassign ")
+	{
+		Args = SplitString(Mid(Cmd, 12), " ", true);
+		class'CoopLobby'.static.HostAssign(int(Args[0]) - 1, int(Args[1]) - 1);
+	}
+	else if (Left(Cmd, 9) ~= "waitslot ")
+	{
+		StartWait('Slot', int(Mid(Cmd, 9)) - 1);
+	}
+	else if (Cmd ~= "lobbylog")
+	{
+		LogLobby();
+	}
+	else if (Left(Cmd, 11) ~= "lobbystart ")
+	{
+		if (CoopLobbyScreen(`SCREENSTACK.GetFirstInstanceOf(class'CoopLobbyScreen')) != none)
+		{
+			CoopLobbyScreen(`SCREENSTACK.GetFirstInstanceOf(class'CoopLobbyScreen')).Start(Mid(Cmd, 11));
+		}
+		else
+		{
+			class'CoopLobby'.static.HostStart(Mid(Cmd, 11));
+		}
+	}
+	// "@finalshell": the War of the Chosen main menu players see (test copies start in the developer menu), as the
+	// developer menu's "Final Shell Menus" button opens it
+	else if (Cmd ~= "finalshell")
+	{
+		XComShellPresentationLayer(`PRESBASE).UIFinalShellScreen();
+	}
+	else if (Cmd ~= "sceneactors")
+	{
+		class'CoopShellScene'.static.LogSceneActors();
+	}
+	// scenario mode: "@scenario STAGE PLAYERS" (0 early, 1 mid, 2 late) starts one without the lobby
+	else if (Left(Cmd, 9) ~= "scenario ")
+	{
+		Args = SplitString(Mid(Cmd, 9), " ", true);
+		class'CoopScenario'.static.Start(int(Args[0]), (Args.Length > 1) ? int(Args[1]) : 2);
+	}
+	else if (Cmd ~= "squadslots")
+	{
+		LogSquadSlots();
+	}
+	else if (Cmd ~= "aliens")
+	{
+		class'CoopBalanced'.static.LogAliens();
+	}
+	else if (Cmd ~= "chunkprime")
+	{
+		class'CoopChunks'.static.PrimeProbe();
+	}
+	else if (Cmd ~= "chunkpause")
+	{
+		class'CoopChunks'.static.PauseProbe();
 	}
 	else if (Left(Cmd, 9) ~= "crewinfo ")
 	{
@@ -582,6 +686,44 @@ function StartDebugCampaign()
 	}
 	`log("campaign created frames=" $ `XCOMHISTORY.GetNumGameStates(),, 'CoopHarness');
 	GetALocalPlayerController().ConsoleCommand("open Avenger_Root?game=XComGame.XComHeadQuartersGame");
+}
+
+// "@lobby MODE": the lobby's mode from the step's word
+function int LobbyMode(string Arg)
+{
+	if (Arg ~= "scenario")
+	{
+		return class'CoopLobby'.const.MODE_SCENARIO;
+	}
+	return (Arg ~= "balanced") ? class'CoopLobby'.const.MODE_BALANCED : class'CoopLobby'.const.MODE_CAMPAIGN;
+}
+
+function LogLobby()
+{
+	local CoopLobbyScreen Lobby;
+
+	Lobby = CoopLobbyScreen(`SCREENSTACK.GetFirstInstanceOf(class'CoopLobbyScreen'));
+	if (Lobby == none)
+	{
+		`log("lobby: no lobby screen open",, 'CoopLobby');
+		return;
+	}
+	Lobby.LogRows();
+}
+
+// "@squadslots": the open squad select screen (vanilla or robojumper's), its slot count and the HQ squad
+function LogSquadSlots()
+{
+	local UISquadSelect Screen;
+
+	Screen = UISquadSelect(`HQPRES.ScreenStack.GetFirstInstanceOf(class'UISquadSelect'));
+	if (Screen == none)
+	{
+		`log("squadslots: no squad select open",, 'CoopHarness');
+		return;
+	}
+	`log("squadslots: screen=" $ Screen.Class.Name @ "slots=" $ Screen.SoldierSlotCount @ "squad=" $ `XCOMHQ.Squad.Length
+		@ "max=" $ class'X2StrategyGameRulesetDataStructures'.static.GetMaxSoldiersAllowedOnMission(Screen.GetMissionState()),, 'CoopHarness');
 }
 
 // One line that two instances can compare to tell whether they hold the same campaign.

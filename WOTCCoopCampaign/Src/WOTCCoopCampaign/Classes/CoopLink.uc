@@ -406,7 +406,8 @@ static function bool TryConnect()
 // CoopJoin, guest: the connection to the host closed. Slot is the one we had.
 static function GuestLostHost(int Slot)
 {
-	if (default.GuestHost == "" || !class'CoopRole'.static.CoopActive())
+	// a guest in the main menu's lobby has no campaign yet; the host left to start the game (CoopLobby)
+	if (default.GuestHost == "" || (!class'CoopRole'.static.CoopActive() && !class'CoopLobby'.default.bGuestInLobby))
 	{
 		return;
 	}
@@ -500,6 +501,9 @@ static function GuestJoined(int Slot)
 static function Tick()
 {
 	class'CoopTacticalNet'.static.KeepBase();
+	class'CoopChunks'.static.Init();    // chunked history sends (experiment; idle unless a send runs)
+	class'CoopLobby'.static.Init();     // the main menu's lobby: guests hear "CoopLobby"
+	class'CoopLobby'.static.Tick();
 	class'CoopActivity'.static.Tick();
 	class'CoopRoster'.static.Tick();
 	class'CoopGeoWatch'.static.HostTick();

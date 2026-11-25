@@ -10,6 +10,7 @@ class CoopActivity extends Object config(CoopCampaign);
 
 const RESEND_SECONDS = 10;
 const MAX_PLAYERS = 4;
+const SQUAD_TEXT = "Selecting the squad";
 
 var config bool bInited;
 var config string LocalShown;          // our activity as last sent
@@ -36,8 +37,8 @@ static function Init()
 static function string TextFor(UIScreen Screen)
 {
 	if (Screen == none)                              return "";
-	if (Screen.IsA('UISquadSelect'))                 return "Picking the squad";
-	if (Screen.IsA('UIPersonnel_SquadSelect'))       return "Picking the squad";
+	if (Screen.IsA('UISquadSelect'))                 return SQUAD_TEXT;
+	if (Screen.IsA('UIPersonnel_SquadSelect'))       return SQUAD_TEXT;
 	if (Screen.IsA('UIArmory_Promotion') || Screen.IsA('UIArmory_PromotionHero') || Screen.IsA('UIArmory_PromotionPsiOp'))
 	                                                 return "Promoting a soldier";
 	if (Screen.IsA('UIArmory_Loadout'))              return "Changing a soldier's loadout";
@@ -65,6 +66,10 @@ static function string TextFor(UIScreen Screen)
 	                                                 return "Reading the Resistance report";
 	if (Screen.IsA('UIAfterAction') || Screen.IsA('UIMissionSummary'))
 	                                                 return "Reviewing the mission";
+	// the mission briefing before squad select (UIMission_GOps, _Council, ...) is not a UIAlert and had no line, so
+	// the host showed "Reading an alert" (playtest 2026-11-19) right before "Picking the squad", probably from a
+	// UIAlert lower in the stack
+	if (Screen.IsA('UIMission'))                     return "Looking at a mission";
 	if (Screen.IsA('UIAlert'))                       return "Reading an alert";
 	if (Screen.IsA('UIFacility_Labs'))               return "In the Research Lab";
 	if (Screen.IsA('UIFacility_Workshop') || Screen.IsA('UIFacility_Storage'))
@@ -98,6 +103,15 @@ static function string LocalText()
 	if (Pres == none || Pres.ScreenStack == none)
 	{
 		return "";
+	}
+	// Squad select is one activity from opening it to the launch, also while a soldier's Armory screens or the
+	// soldier list are open over it.
+	for (i = 0; i < Pres.ScreenStack.Screens.Length; i++)
+	{
+		if (Pres.ScreenStack.Screens[i] != none && Pres.ScreenStack.Screens[i].IsA('UISquadSelect'))
+		{
+			return SQUAD_TEXT;
+		}
 	}
 	for (i = 0; i < Pres.ScreenStack.Screens.Length; i++)
 	{

@@ -14,3 +14,8 @@ m_strAsked="Asked..."
 
 [CoopSaveGate]
 m_strHostSaves="In co-op only the host saves the campaign"
+
+[CoopShellWatch]
+m_strCoopCampaign="Co-op Campaign"
+m_strScenarioMode="Scenario Mode"
+m_strBalanced="Balanced Co-op Campaign"
