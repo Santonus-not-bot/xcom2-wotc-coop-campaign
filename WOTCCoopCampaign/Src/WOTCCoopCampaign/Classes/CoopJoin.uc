@@ -83,8 +83,7 @@ function OnPlayerJoined(string RequestURL, string Address, const UniqueNetId Uni
 // Host: "CoopHello"(nonce, wanted slot).
 static function HostOnHello(array<byte> RawParams)
 {
-	local array<byte> Params;
-	local int Nonce, Want, Slot, Idx;
+	local int Nonce, Want, Slot, Idx, i;
 	local XComGameState_CoopCampaign Coop;
 
 	Nonce = class'XComGameStateNetworkManager'.static.GetCommandParam_Int(RawParams);
@@ -93,9 +92,12 @@ static function HostOnHello(array<byte> RawParams)
 	{
 		return;
 	}
-	// a slot remembered from another campaign may not exist in this one
+	// a slot remembered from another campaign may not exist in this one; a slot this host gave out or is waiting for
+	// does, even above PlayerCount (a third guest in a campaign started for two: soakfresh16-20261126-110003 dropped
+	// C's claim to slot 2, gave it slot 3, waited 120 s for slot 2 on the Avenger and for slot 3 in the next mission,
+	// and later gave C the slot 1 of B, which was away)
 	Coop = class'XComGameState_CoopCampaign'.static.Get();
-	if (Coop != none && Want >= Coop.PlayerCount)
+	if (Coop != none && Want >= Coop.PlayerCount && !class'CoopLink'.static.SlotAwaited(Want) && default.HelloSlots.Find(Want) == INDEX_NONE)
 	{
 		Want = 0;
 	}
@@ -127,6 +129,15 @@ static function HostOnHello(array<byte> RawParams)
 			`log("partner said hello but all guest slots are taken",, 'CoopJoin');
 			return;
 		}
+		// the slot belongs to this guest now: an older guest that held it no longer gets it back as a reconnect
+		// (soakfresh16-20261126-110003: B's hello matched its old slot 1, which C held by then: two guests on slot 1)
+		for (i = 0; i < default.HelloSlots.Length; i++)
+		{
+			if (i != Idx && default.HelloSlots[i] == Slot)
+			{
+				default.HelloSlots[i] = -1;
+			}
+		}
 		if (Idx == INDEX_NONE)
 		{
 			default.HelloNonces.AddItem(Nonce);
@@ -141,8 +152,20 @@ static function HostOnHello(array<byte> RawParams)
 		class'CoopRole'.static.SlotConnected(Slot, -1);
 		class'CoopRole'.static.MarkPresent(Slot);
 		`log("partner joined: player slot" @ Slot @ "(wanted" @ Want $ ")",, 'CoopJoin');
+		// the slot first: HostGuestJoined can start a chunked send at once, and a guest acks each chunk with its slot
+		// (mission3chunk-20261126-111450: the last guest back got the first 32 chunks before its slot, acked them as
+		// slot 1, and the host waited for slot 2's acks until the 90 s fallback)
+		SendSlotFor(Nonce, Slot);
 		class'CoopLink'.static.HostGuestJoined(Slot);
+		return;
 	}
+	SendSlotFor(Nonce, Slot);
+}
+
+static function SendSlotFor(int Nonce, int Slot)
+{
+	local array<byte> Params;
+
 	class'XComGameStateNetworkManager'.static.AddCommandParam_Int(Nonce, Params);
 	class'XComGameStateNetworkManager'.static.AddCommandParam_Int(Slot, Params);
 	`XCOMNETMANAGER.SendRemoteCommand("CoopSlotFor", Params);

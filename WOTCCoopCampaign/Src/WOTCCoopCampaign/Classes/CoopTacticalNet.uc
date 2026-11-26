@@ -77,9 +77,24 @@ static function SendSwitchTurn(int TargetSlot, int InitiativeID, int Index, int 
 // which guest 2 does not have yet. Relayed partial histories therefore always failed on guest 2 ("Base size
 // mismatch ... Base hash mismatch", OnSendError_RequestNewHistory) and the engine sent the full history
 // after that error round trip anyway (runs mission3-20261112-192009, -194635). Two-player games never hit it.
+// With chunked sends on (CoopChunks.bChunkedWholeSend): the same whole history, as the host's base in chunks plus a
+// "whole" delta (SendWhole's path). The host's base is now its full history with the guest's frames, so every guest
+// takes it as its own base and the delta applies on each. A whole send stops arriving above about 670 KB: in
+// soakfresh16 (2026-11-26) a relay of 772 KB in mission 14 never reached either guest, and every later send waited
+// behind it. Each guest acknowledges the delta with "CoopHistoryAck" (OnReceiveHistory, in a mission), as before.
 static function SendRelay()
 {
 	default.bRelayPending = false;
+	if (class'CoopChunks'.default.bChunkedWholeSend && `XCOMNETMANAGER.BaseHistoryData.Length > 0)
+	{
+		default.ChunkedKind = "relay";
+		if (class'CoopChunks'.static.SendBytes(`XCOMNETMANAGER.BaseHistoryData, class'CoopChunks'.const.MODE_BASE, "relay"))
+		{
+			`log("relay: the base (" $ `XCOMNETMANAGER.BaseHistoryData.Length @ "bytes) goes out in chunks, then a delta; frames="
+				$ `XCOMHISTORY.GetNumGameStates() @ "to" @ default.RelayAckSlots.Length @ "guests",, 'CoopHandoff');
+			return;
+		}
+	}
 	`XCOMNETMANAGER.SendHistory(`XCOMHISTORY, `XEVENTMGR);
 	`log("relayed the history (" $ `XCOMHISTORY.GetNumGameStates() @ "frames) to" @ default.RelayAckSlots.Length @ "guests",, 'CoopHandoff');
 }

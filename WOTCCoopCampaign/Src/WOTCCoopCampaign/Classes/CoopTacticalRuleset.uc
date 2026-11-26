@@ -32,7 +32,8 @@
 class CoopTacticalRuleset extends X2TacticalGameRuleset;
 
 var float WaitPlayersUntil;      // scenario mode, host: the first turn's wait for the players ends here (TurnPhase_CoopWaitPlayers)
-var int AcksNeeded;        // partial history sent: acknowledgements still missing (host: one per connected guest)
+var float HandoffWaitUntil;     // host: a handoff waits for the mission history to reach the guests until then
+var int AcksNeeded;      // partial history sent: acknowledgements still missing (host: one per connected guest)
 var bool bResumeAfterHandoff;
 var bool bMissionSent;     // host: the mission history went to the guests on this map
 var bool bHandingOver;     // inside CoopReplayMgr.ResumeReplay: it starts playback itself
@@ -64,6 +65,13 @@ function bool LocalPlaysXComTurn()
 		return false;
 	}
 	return class'CoopTactical'.static.ControllerOfInitiative(Entry) == class'CoopRole'.static.LocalSlot();
+}
+
+// Host: the mission history went out to the guests of the launch and each acknowledged it (or left).
+static function bool MissionHistoryDelivered()
+{
+	return !(class'CoopLink'.default.bMissionRunning && !class'CoopLink'.default.bMissionHistorySent)
+		&& class'CoopTacticalNet'.default.MissionAckSlots.Length == 0;
 }
 
 static function bool HandoffActive()
@@ -368,6 +376,21 @@ Begin:
 		sleep(0.0);
 	}
 	XComTacticalController(GetALocalPlayerController()).SetInputState('Multiplayer_Inactive');
+	// Host: guests back in the mission have no base until the mission history reaches them (CoopLink waits for every
+	// guest of the launch first). A partial history before that fails on each guest with a base size mismatch
+	// (soakfresh16-20261126-110003: the host's turn ended while it still waited for a guest).
+	if (class'CoopRole'.static.IsHost())
+	{
+		HandoffWaitUntil = WorldInfo.RealTimeSeconds + 300;
+		if (!MissionHistoryDelivered())
+		{
+			`log("handoff: waiting until the guests have the mission history",, 'CoopHandoff');
+		}
+		while (!MissionHistoryDelivered() && WorldInfo.RealTimeSeconds < HandoffWaitUntil)
+		{
+			sleep(0.1);
+		}
+	}
 	AcksNeeded = class'CoopRole'.static.IsHost() ? Max(1, class'CoopRole'.default.ConnectedSlots.Length) : 1;
 	`XCOMNETMANAGER.SendPartialHistory(`XCOMHISTORY, `XEVENTMGR);
 	`log("handoff: partial history sent, waiting for ack",, 'CoopHandoff');
