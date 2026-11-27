@@ -490,10 +490,13 @@ function OnRemoteCommand(string Command, array<byte> RawParams)
 	}
 	if (Command == "CoopHistoryAck")
 	{
-		if (default.RelayAckSlots.Length > 0 && !class'CoopRole'.static.IsGuest())
+		Slot = RawParams.Length > 0 ? class'XComGameStateNetworkManager'.static.GetCommandParam_Int(RawParams) : -1;
+		// an ack for the host's relay, not for a handoff of its own; while the host hands over, only from a guest the
+		// relay still waits for (soakfresh16-20261127-032327: a relay ack missing from a guest outside the mission
+		// swallowed both acks of the host's next handoff, which then waited for the rest of the mission)
+		if (default.RelayAckSlots.Length > 0 && !class'CoopRole'.static.IsGuest()
+			&& (!Rules.IsInState('TurnPhase_CoopHandoff') || default.RelayAckSlots.Find(Slot) != INDEX_NONE || Slot < 0))
 		{
-			// an ack for the host's relay, not for a handoff of its own
-			Slot = RawParams.Length > 0 ? class'XComGameStateNetworkManager'.static.GetCommandParam_Int(RawParams) : -1;
 			if (TakeAck(default.RelayAckSlots, Slot))
 			{
 				ForwardPendingSwitch("relay acknowledged");

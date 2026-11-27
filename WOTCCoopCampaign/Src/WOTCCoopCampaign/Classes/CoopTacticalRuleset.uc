@@ -390,6 +390,13 @@ Begin:
 		{
 			sleep(0.1);
 		}
+		// relay acks still missing now never come (a guest outside the mission does not ack one); this handoff's own
+		// partial history brings every guest up to date, and its acks must not be taken for the relay's
+		if (class'CoopTacticalNet'.default.RelayAckSlots.Length > 0)
+		{
+			`log("handoff: dropping" @ class'CoopTacticalNet'.default.RelayAckSlots.Length @ "missing relay ack(s)",, 'CoopHandoff');
+			class'CoopTacticalNet'.default.RelayAckSlots.Length = 0;
+		}
 	}
 	AcksNeeded = class'CoopRole'.static.IsHost() ? Max(1, class'CoopRole'.default.ConnectedSlots.Length) : 1;
 	`XCOMNETMANAGER.SendPartialHistory(`XCOMHISTORY, `XEVENTMGR);

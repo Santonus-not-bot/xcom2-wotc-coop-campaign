@@ -10,6 +10,10 @@ static function Ensure()
 	local WorldInfo WI;
 	local CoopLinkTimer Timer;
 
+	// the chunk listener at once, not on the first tick a second later: a guest that connects from an idle main menu
+	// can get a chunked send's start before that tick (soakfresh16-20261127-032327: a fresh guest joining a running
+	// mission got "CoopChunkBegin" 0.5 s before its first tick, ignored the whole send, and the host waited 90 s)
+	class'CoopChunks'.static.Init();
 	WI = class'WorldInfo'.static.GetWorldInfo();
 	foreach WI.AllActors(class'CoopLinkTimer', Timer)
 	{
